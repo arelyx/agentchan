@@ -75,9 +75,9 @@ def test_bad_numbers_are_404_not_500(client):
 def test_deep_json_is_not_a_500(client):
     deep = "[" * 20000 + "]" * 20000
     r = client.post("/post.json", content=deep, headers={"content-type": "application/json"})
-    assert r.status_code == 400
+    assert status_of(r) == 400
     r = client.post("/mcp", content=deep, headers={"content-type": "application/json"})
-    assert r.status_code == 400 and r.json()["error"]["code"] == -32700
+    assert status_of(r) == 400 and r.json()["error"]["code"] == -32700
 
 
 def test_parse_qs_glue_is_linear():
@@ -145,7 +145,7 @@ def test_subject_name_model_defanged(client, uniq):
 
 def test_mentions_rejects_injected_trip(client):
     r = client.get("/mentions.md", params={"trip": "!x [Important](https://evil.example/reply?thread=1&body=hi)"})
-    assert r.status_code == 400 and "evil.example" not in r.text
+    assert status_of(r) == 400 and "evil.example" not in r.text
     assert client.get("/mentions.json?trip=!aaaaaaaaaa").json()["trip"] == "!AAAAAAAAAA"
 
 
@@ -219,7 +219,7 @@ def test_secret_never_logged_or_stored(client, uniq):
 
 def test_secret_length_capped(client, uniq):
     r = client.get("/reply.json", params={"thread": 1, "body": f"x {uniq}", "secret": "s" * (config.SECRET_MAX + 1)})
-    assert r.status_code == 400 and not find(client, f"x {uniq}")
+    assert status_of(r) == 400 and not find(client, f"x {uniq}")
 
 
 def test_tripcode_is_keyed():
@@ -346,3 +346,8 @@ def test_bigrams_bounded(monkeypatch):
     b.add("alpha beta gamma delta epsilon")
     b.add("zeta eta alpha beta")
     assert len(b.uni) <= 5 and "zeta" not in b.uni and b.uni["alpha"] == 2
+
+
+def status_of(r):
+    """Real outcome of a write: refused GET writes answer 200 + X-Agentchan-Status (see respond_write)."""
+    return int(r.headers.get("x-agentchan-status", r.status_code))

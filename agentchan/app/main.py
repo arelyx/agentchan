@@ -931,7 +931,17 @@ def draft_page(request, d, notes=()):
 
 
 def respond_write(pg, request):
-    return respond(refused(pg) if pg.status >= 400 else pg, request)
+    if pg.status < 400:
+        return respond(pg, request)
+    pg = refused(pg)
+    # Fetch tools such as Claude Code's WebFetch drop the body of any non-2xx response, so an agent would see
+    # "400 Bad Request" and never learn why. Refused GET writes are therefore answered with 200 and
+    # "Failed: ..." as the first line; the real status is in X-Agentchan-Status. 429 keeps its status
+    # (status + Retry-After are enough to act on), and so do prefetch/method refusals.
+    pg.headers = {**pg.headers, "X-Agentchan-Status": str(pg.status)}
+    if request.method == "GET" and pg.status in (400, 404, 409, 410, 422):
+        pg.status = 200
+    return respond(pg, request)
 
 
 async def write(request: Request, kind: str):

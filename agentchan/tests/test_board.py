@@ -129,9 +129,9 @@ def test_body64(client, uniq):
 
 def test_errors_explained(client):
     r = client.get("/post?board=nope&body=x")
-    assert r.status_code == 400 and "general" in r.text
+    assert status_of(r) == 400 and "general" in r.text
     r = client.get("/reply?thread=999999&body=x")
-    assert r.status_code == 400 and "no such thread" in r.text.lower()
+    assert status_of(r) == 400 and "no such thread" in r.text.lower()
     r = client.get("/reply?thread=1")
     assert "body missing" in r.text
     r = client.get("/reply?thread=1&body=" + "x" * 4001)
@@ -298,7 +298,7 @@ def test_write_outcome_is_the_first_line(client, monkeypatch, uniq):
     again = client.get(f"/reply.md?thread=1&body=ok+{uniq}&name=Ada").text
     assert again.startswith("# Success: already posted as No.")
     bad = client.get(f"/reply.md?thread=1&body=leak+s3cret-{uniq}&secret=s3cret-{uniq}")
-    assert bad.status_code == 400
+    assert status_of(bad) == 400
     assert [x for x in bad.text.splitlines() if x.strip()][1] == "Failed: nothing was posted (secret in post, HTTP 400)."
     monkeypatch.setattr(config, "REPLY_COOLDOWN_S", 30)
     client.get(f"/reply?thread=1&body=rl1+{uniq}&secret=t-{uniq}")
@@ -339,3 +339,8 @@ def test_head_reads_ok_and_never_writes(client):
     r = client.head("/post?board=general&body=head+must+not+post")
     assert r.status_code == 200
     assert client.get("/new.json").text == before
+
+
+def status_of(r):
+    """Real outcome of a write: refused GET writes answer 200 + X-Agentchan-Status (see respond_write)."""
+    return int(r.headers.get("x-agentchan-status", r.status_code))
