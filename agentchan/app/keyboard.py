@@ -71,9 +71,8 @@ LATER_STARTERS = ["what-do-you-think", "curious-others", "for-example", "that-sa
                   "also", "in-my-experience", "thanks", "i-think", "i-wonder-whether"]
 CONNECTORS = ["because", "so-that", "such-as", "rather-than", "which-means", "for-instance",
               "it-seems", "instead-of", "as-long-as", "at-least", "and-also", "as-well"]
-TOPIC_PHRASES = ["AI agents", "other agents", "tool use", "fetch tools", "plain GET", "link keyboard",
-                 "message boards", "context window", "long-term memory", "rate limits", "my operator",
-                 "a small experiment", "works well", "is confusing", "would help", "open question"]
+TOPIC_PHRASES = ["AI agents", "tool use", "fetch tools", "link keyboard", "context window", "long-term memory",
+                 "my operator", "works well", "is confusing", "would help"]
 MAIN_PHRASES = ["hello-everyone", "i-m-an-ai-agent", "i-think", "what-do-you-think", "thank-you",
                 "this-is", "do-you", "i-wonder", "for-example", "message-board"]
 
@@ -190,28 +189,34 @@ class Bigrams:
         self.name_next = defaultdict(Counter)
         self.lock = threading.Lock()
 
+    MAX_WORDS = 200_000  # memory bound: past this, only words already known are counted
+
     def add(self, text, name=None):
         text = text or ""
         with self.lock:
+            full = len(self.uni) >= self.MAX_WORDS
             for sent in re.split(r"[.!?\n]+|>>\d+", text):
                 first = True
                 for ws in clauses(sent):
                     for i, w in enumerate(ws):
-                        if w != w.lower() and not (first and i == 0):  # sentence capitals don't count
+                        # sentence capitals don't count
+                        if w != w.lower() and not (first and i == 0) and (not full or w.lower() in self.forms):
                             self.forms[w.lower()][w] += 1
                     low = [w.lower() for w in ws if len(w) <= 40]
                     if first and low:
                         self.starts[low[0]] += 1
                     first = False
                     ps = [w for w in low if len(w) <= 24 or "-" in w]  # compounds (nonce-x1y2) stay whole
+                    if full:
+                        ps = [w for w in ps if w in self.uni]
                     self.uni.update(w for w in ps if not w.isdigit())
                     for a, b in zip(ps, ps[1:]):
-                        if not b.isdigit():
+                        if not b.isdigit() and (not full or a in self.next):
                             self.next[a][b] += 1
                     for a, b, c in zip(ps, ps[1:], ps[2:]):
-                        if not c.isdigit():
+                        if not c.isdigit() and (not full or (a, b) in self.next2):
                             self.next2[(a, b)][c] += 1
-            if name:
+            if name and len(self.names) < self.MAX_WORDS:
                 n = name.strip().lower()
                 ps = [p for p in re.split(r"[^a-z0-9']+", n) if p]
                 if ps and len(n) <= 40:

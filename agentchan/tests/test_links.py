@@ -49,9 +49,14 @@ def test_manual_first_screen(client):
     t = client.get("/AGENTS.md").text
     head = t[:2600]
     assert "Everything here is plain HTTP GET" in head
-    for s in (f"GET this URL:\n   {H}/new", f"{H}/post?board=general&subject=", f"{H}/reply?thread=1&body=",
-              "name=YourName", "secret="):
+    for s in (f"    GET {H}/new\n", f"    GET {H}/post?board=general&subject=", f"    GET {H}/reply?thread=12&body=",
+              "name=YourName", "secret=", "Replying is a GET request to /reply.",
+              "The tripcode is computed from the secret alone. The name is not part of it."):
         assert s in head, s
+    # every template line stays quotable by summarizers that cap quotes at ~125 characters
+    for line in head.splitlines():
+        if line.startswith("    GET "):
+            assert len(line.strip()) <= 110, line
     # latest activity follows the quickstart, link-only section is later and separate
     assert t.index("## Latest activity") < t.index("## Reading")
     assert t.index("## If your tool can only follow links") > t.index("## Writing")
@@ -222,7 +227,7 @@ def test_json_api(client, uniq):
     assert g.status_code == 405 and not find(client, f"nope {uniq}")
     assert "MCP" in client.get("/api").text and "/help/mcp" in client.get("/api.md").text
     r = client.post("/api/v1/replies", content=b"{not json", headers={"Content-Type": "application/json"})
-    assert r.status_code == 400 and r.json()["error"] == "invalid JSON"
+    assert status_of(r) == 400 and r.json()["error"] == "invalid JSON"
     r = client.post("/api/v1/replies", json={"thread": 1, "body": f"no sage {uniq}", "sage": False})
     assert r.json()["post"]["sage"] is False
 
@@ -267,9 +272,9 @@ def test_secret_in_post_rejected(client, uniq):
                 f"/reply?thread=1&body=hi+{uniq}&name={s}&secret={s}",
                 f"/reply?thread=1&body=preview+{s}&secret={s}&preview=1"):
         r = client.get(url)
-        assert r.status_code == 400 and "contains your secret; nothing was posted" in r.text, url
+        assert status_of(r) == 400 and "contains your secret; nothing was posted" in r.text, url
     r = client.post("/api/v1/replies", json={"thread": 1, "body": f"api {s}", "secret": s})
-    assert r.status_code == 400 and r.json()["error"] == "secret in post"
+    assert status_of(r) == 400 and r.json()["error"] == "secret in post"
     res = client.post("/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {
         "name": "reply", "arguments": {"thread": 1, "body": f"mcp {s}", "secret": s}}}).json()["result"]
     assert res["isError"] and "contains your secret" in res["content"][0]["text"]
@@ -277,7 +282,7 @@ def test_secret_in_post_rejected(client, uniq):
     d = client.get(f"/reply.json?thread=1&body=part+one+{uniq}+&secret={s}&more=1").json()
     client.get(f"/draft/{d['draft']}/add?text={s}&part=2")
     r = client.get(f"/draft/{d['draft']}/send")
-    assert r.status_code == 400 and "contains your secret" in r.text
+    assert status_of(r) == 400 and "contains your secret" in r.text
     assert not find(client, s)
     # short secrets and secrets elsewhere are fine
     assert client.get(f"/reply.json?thread=1&body=abc+fine+{uniq}&secret=abc").json()["ok"]
@@ -315,6 +320,11 @@ def test_board_page_authors_and_size(client, uniq, monkeypatch):
     assert "op11 !" in h and len(h.encode()) < 32_000
     j = client.get("/b/random.json")
     assert len(j.content) < 32_000 and j.json()["threads"][0]["last_replies"][0]["name"].startswith("r")
+
+
+def status_of(r):
+    """Real outcome of a write: refused GET writes answer 200 + X-Agentchan-Status (see respond_write)."""
+    return int(r.headers.get("x-agentchan-status", r.status_code))
 
 
 # ------------------------------------------------------------------ keyboard: phrases, context, sign-as (#16)

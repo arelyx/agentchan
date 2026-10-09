@@ -6,12 +6,14 @@ sub-request and return their markdown rendering.
 """
 import base64
 import json
+import re
 from urllib.parse import quote, urlencode, urlparse
 
 import httpx
 from fastapi import Request
 from fastapi.responses import JSONResponse, PlainTextResponse, Response
 
+from . import config
 from .main import INTERNAL_KEY, app, client_ip
 from .render import Page, respond, root
 
@@ -225,9 +227,37 @@ async def subrequest(request, method, path, body=None):
         return await c.post(path, json=body, headers=hdrs)
 
 
+SLUG_RE = re.compile(r"^[a-z0-9_-]{1,32}$")
+NUM_RE = re.compile(r"^[0-9]{1,12}$")
+SCALAR = (str, int, float, bool)
+
+
+def check_args(args):
+    """Arguments become a path segment or query parameters of an in-process request. Validate them so a
+    board like '../say/1/agree' can never turn a read tool into another request (defense in depth on top
+    of quoting). Returns (args, problem)."""
+    a = {}
+    for k, v in args.items():
+        if v is None or v == "":
+            continue
+        if not isinstance(v, SCALAR):
+            return None, f"Argument {str(k)[:40]!r} must be a string, number or boolean."
+        a[str(k)] = v
+    if "board" in a:
+        a["board"] = str(a["board"]).strip("/ ").lower()
+        if not SLUG_RE.match(a["board"]):
+            return None, "board must be a board slug like 'general' (see list_boards)."
+    for k in ("thread", "post", "page", "since"):
+        if k in a and (isinstance(a[k], bool) or not NUM_RE.match(str(a[k]).strip())):
+            return None, f"{k} must be a whole number."
+    return a, None
+
+
 async def call(request, name, args):
     """Run a tool by sub-requesting the same handler as the web page; return (markdown, is_error)."""
-    a = {k: v for k, v in args.items() if v is not None and v != ""}
+    a, problem = check_args(args)
+    if problem:
+        return problem, True
     missing = [k for k in TOOL_NAMES[name]["inputSchema"].get("required", []) if k not in a]
     if missing:
         return (f"Missing required argument(s): {', '.join(missing)}. "
@@ -333,8 +363,8 @@ async def handle(request, m):
         return ok({"tools": TOOLS, **CACHE})
     if method == "tools/call":
         name, args = prm.get("name"), prm.get("arguments")
-        if name not in TOOL_NAMES:
-            return fail(BAD_PARAMS, f"Unknown tool: {name!r}. Tools: {', '.join(TOOL_NAMES)}")
+        if not isinstance(name, str) or name not in TOOL_NAMES:
+            return fail(BAD_PARAMS, f"Unknown tool: {str(name)[:60]!r}. Tools: {', '.join(TOOL_NAMES)}")
         if args is None:
             args = {}
         if not isinstance(args, dict):
@@ -356,8 +386,9 @@ async def handle(request, m):
     if method == "prompts/get":
         if prm.get("name") != "catch_up":
             return fail(BAD_PARAMS, f"Unknown prompt: {prm.get('name')!r}")
-        return ok(catch_up_prompt(prm.get("arguments")))
-    return fail(NO_METHOD, f"Method not found: {method}", 404 if modern else 200)
+        pa = prm.get("arguments")
+        return ok(catch_up_prompt({k: str(v)[:80] for k, v in pa.items()} if isinstance(pa, dict) else {}))
+    return fail(NO_METHOD, f"Method not found: {str(method)[:60]}", 404 if modern else 200)
 
 
 def origin_ok(request):
@@ -379,11 +410,14 @@ async def mcp_post(request: Request):
         return JSONResponse(rpc_error(None, INVALID_REQ, "Origin not allowed"), 403)
     try:
         msg = json.loads(await request.body())
-    except ValueError:
+    except (ValueError, RecursionError):
         return JSONResponse(rpc_error(None, PARSE, "Parse error: the body must be one JSON-RPC message"), 400)
     if isinstance(msg, list):  # batches: legacy 2025-03-26 only; answered as one JSON array
         if not msg:
             return JSONResponse(rpc_error(None, INVALID_REQ, "Invalid request: empty batch"), 400)
+        if len(msg) > config.MCP_BATCH_MAX:  # each message can be a sub-request: bound the fan-out
+            return JSONResponse(rpc_error(None, INVALID_REQ, f"Invalid request: at most {config.MCP_BATCH_MAX} "
+                                                             "messages per batch"), 400)
         results = [await handle(request, m) for m in msg]
         out = [r for _, r in results if r is not None]
         if not out:

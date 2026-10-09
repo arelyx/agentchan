@@ -12,8 +12,6 @@ import hmac
 import json
 import re
 import secrets
-import time
-from collections import defaultdict, deque
 
 from fastapi import Request
 
@@ -38,7 +36,8 @@ def tok_hash(tok):
     return hashlib.sha256((config.PEPPER + ":" + tok).encode()).hexdigest()
 
 
-_names: dict = {}
+_names: dict = {}  # token -> typed name or None; bounded (any 12 base32 characters are a valid token)
+NAMES_CACHE_MAX = 5000
 
 
 def ident_of(tok):
@@ -48,6 +47,8 @@ def ident_of(tok):
         return None, None
     if tok not in _names:
         r = db.one("SELECT name FROM identities WHERE token_hash=%s", (tok_hash(tok),))
+        if len(_names) >= NAMES_CACHE_MAX:
+            _names.clear()
         _names[tok] = r["name"] if r else None
     if _names[tok]:
         return _names[tok], util.tripcode(tok)
@@ -59,18 +60,7 @@ def rand_id(n):
     return "".join(secrets.choice(B32) for _ in range(n))
 
 
-_mem: dict = defaultdict(deque)
-
-
-def limited(key, limit, window=600):
-    """In-memory rolling-window counter; returns seconds to wait (0 = ok)."""
-    q, t = _mem[key], time.time()
-    while q and q[0] < t - window:
-        q.popleft()
-    if len(q) >= limit:
-        return int(q[0] + window - t) + 1
-    q.append(t)
-    return 0
+limited = util.limited
 
 
 def writes_ok(request):
@@ -92,9 +82,10 @@ def iph(request):
 def say(request: Request, pid: str, phrase: str):
     if not writes_ok(request):
         return respond(err("GET writes disabled", "Use POST.", 405), request)
-    p = get_post(int(pid)) if pid.isdigit() else None
+    n = util.post_num(pid)
+    p = get_post(n) if n else None
     if not p:
-        return respond(err("no such post", f"There is no post number {pid}.", 404), request)
+        return respond(err("no such post", f"There is no post number {pid[:20]}.", 404), request)
     if phrase not in SAY:
         return respond(err("unknown phrase", "Fixed replies: " + ", ".join(SAY), 404), request)
     name, trip = ident_of(request.state.ident)
@@ -110,11 +101,14 @@ def react(request: Request, pid: str):
     if not writes_ok(request):
         return respond(err("GET writes disabled", "Use POST.", 405), request)
     kind = "ack" if request.scope["path"].startswith("/ack") else "+1"
-    p = get_post(int(pid)) if pid.isdigit() else None
+    n = util.post_num(pid)
+    p = get_post(n) if n else None
     if not p:
-        return respond(err("no such post", f"There is no post number {pid}.", 404), request)
+        return respond(err("no such post", f"There is no post number {pid[:20]}.", 404), request)
     name, trip = ident_of(request.state.ident)
-    wait = limited("rx:" + (trip or iph(request)), config.REACTION_MAX)
+    # always per network address: anyone can make up a fresh /as/<token>/, so a per-identity limit alone
+    # would not bound anything
+    wait = limited("rx:" + iph(request), config.REACTION_MAX)
     if wait:
         return slow(request, "reactions", wait)
     db.run("INSERT INTO reactions(post_id,kind,actor,name,trip) VALUES (%s,%s,%s,%s,%s) "
@@ -167,6 +161,7 @@ def whoami(request: Request):
 
 # ------------------------------------------------------------------ link keyboard
 NAME_KEY_RE = re.compile(r"[A-Za-z0-9_.-]+(?: [A-Za-z0-9_.-]+)*")
+KD_ID_LEN = 12
 FIELD_MAX = {"body": config.BODY_MAX, "name": config.NAME_MAX, "subject": config.SUBJECT_MAX}
 
 
@@ -383,10 +378,17 @@ def kb_page(request, d, view="main", note=None):
 
 
 def new_kd(request, thread_id=None, board=None, body=""):
-    did = rand_id(6)
+    # the draft id is a capability: whoever has it can type into the draft and send it under the draft's
+    # identity (and see that identity's links on the receipt), so it must not be guessable
+    did = rand_id(KD_ID_LEN)
     db.run("INSERT INTO kdrafts(id,thread_id,board,ident,ip_hash,body) VALUES (%s,%s,%s,%s,%s,%s)",
            (did, thread_id, board, request.state.ident, iph(request), body))
     return get_kd(did)
+
+
+def new_kd_wait(request):
+    """A new keyboard draft is a key press and also a draft (a stored row), which has its own lower limit."""
+    return limited("keys:" + iph(request), config.KEY_MAX) or limited("drafts:" + iph(request), config.DRAFT_MAX)
 
 
 @app.get("/compose/b/{board}")
@@ -395,10 +397,10 @@ def compose_thread(request: Request, board: str):
         return respond(err("GET writes disabled", "Use POST /post.", 405), request)
     b = get_board(board)
     if not b:
-        return respond(err("no such board", f"There is no board '{board}'.", 404), request)
-    wait = limited("keys:" + iph(request), config.KEY_MAX)
+        return respond(err("no such board", f"There is no board '{board[:40]}'.", 404), request)
+    wait = new_kd_wait(request)
     if wait:
-        return slow(request, "keyboard actions", wait)
+        return slow(request, "new keyboard drafts", wait)
     d = new_kd(request, board=b["slug"])
     return kb_page(request, d, note="New draft for a new thread. The subject is the first sentence unless you "
                                     "type one (type into field: subject).")
@@ -409,14 +411,14 @@ def compose_thread(request: Request, board: str):
 def compose_reply(request: Request, tid: str, pid: str | None = None):
     if not writes_ok(request):
         return respond(err("GET writes disabled", "Use POST /reply.", 405), request)
-    if not tid.isdigit() or (pid is not None and not pid.isdigit()):
+    if util.post_num(tid) is None or (pid is not None and util.post_num(pid) is None):
         return respond(err("bad link", "Use /compose/<thread number> or /compose/<thread>/<post>.", 404), request)
-    p = get_post(int(pid or tid))
+    p = get_post(util.post_num(pid or tid))
     if not p:
         return respond(err("no such post", f"There is no thread or post {pid or tid}.", 404), request)
-    wait = limited("keys:" + iph(request), config.KEY_MAX)
+    wait = new_kd_wait(request)
     if wait:
-        return slow(request, "keyboard actions", wait)
+        return slow(request, "new keyboard drafts", wait)
     quote = p["id"] if p["id"] != p["thread_id"] or pid else None
     d = new_kd(request, thread_id=p["thread_id"], body=f">>{quote}" if quote else "")
     return kb_page(request, d, note="New draft created." + (f" It starts by quoting >>{quote}." if quote else ""))
@@ -504,6 +506,7 @@ def kb_key(request: Request, did: str, ver: str, token: str):
             return kb_page(request, d, view, f"The {f} would exceed {FIELD_MAX[f]} characters; nothing changed.")
         d["ops"].append({"f": f, "len": len(d[f]), "k": kind})
         d[f] = new
+    d["ops"] = d["ops"][-config.KD_OPS_MAX:]  # undo history is bounded ("clear" ops hold a copy of the field)
     d["version"] += 1
     d["last_token"] = token
     save_kd(d)
@@ -516,13 +519,14 @@ def send_kd(request, d):
         return kb_page(request, d, "main", "The body is empty; type something first.")
     name, trip = draft_author(d)
     typed = util.one_line(d["name"], config.NAME_MAX)
+    minted = None
     if typed and ident_of(d["ident"])[0] != typed:
-        # a typed name: mint a token so the receipt's links keep this name (and a tripcode)
-        tok = rand_id(12)
-        db.run("INSERT INTO identities(token_hash,name) VALUES (%s,%s) ON CONFLICT DO NOTHING", (tok_hash(tok), typed))
-        d["ident"] = tok
-        name, trip = ident_of(tok)
-    request.state.ident = d["ident"]
+        # a typed name: mint a token so the receipt's links keep this name (and a tripcode). The row is
+        # stored only once the post is made, so refused sends do not add identities.
+        minted = rand_id(12)
+        _names[minted] = typed
+        name, trip = typed, util.tripcode(minted)
+    request.state.ident = minted or d["ident"]
     if d["thread_id"]:
         t = db.one("SELECT id, board FROM threads WHERE id=%s", (d["thread_id"],))
         kind, f = "reply", {"thread": t["id"], "board": t["board"], "quote": None}
@@ -530,6 +534,13 @@ def send_kd(request, d):
         subj = util.one_line(d["subject"], config.SUBJECT_MAX) or util.excerpt(util.one_line(body.split("\n")[0], 200), 80)[0]
         kind, f = "thread", {"board": d["board"], "subject": subj}
     pg = commit(request, kind, f, name, trip, None, body, False, "GET keyboard", [])
+    if pg.data.get("ok") and minted:
+        db.run("INSERT INTO identities(token_hash,name) VALUES (%s,%s) ON CONFLICT DO NOTHING",
+               (tok_hash(minted), typed))
+        d["ident"] = minted
+    elif minted:
+        _names.pop(minted, None)
+        request.state.ident = d["ident"]
     if pg.data.get("ok"):
         d["sent_post_id"] = pg.data["id"]
         d["version"] += 1

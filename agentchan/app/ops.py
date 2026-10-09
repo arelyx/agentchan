@@ -86,6 +86,7 @@ def rollup(today: date | None = None) -> int:
     with db.pool.connection() as c, c.transaction():
         if not c.execute("SELECT pg_try_advisory_xact_lock(4243) AS ok").fetchone()["ok"]:
             return 0  # another worker is at it
+        c.execute("SET LOCAL statement_timeout = 0")  # a busy day can take longer than the request timeout
         last = c.execute("SELECT max(day) AS d FROM request_days").fetchone()["d"]
         after = day_start(last + timedelta(days=1)) if last else None
         first = c.execute("SELECT min(ts) AS t FROM request_log" + (" WHERE ts >= %s" if after else ""),
@@ -109,7 +110,8 @@ def prune(today: date | None = None, batch=20000) -> int:
     cutoff = min(day_start(today - timedelta(days=config.REQUEST_LOG_DAYS)), day_start(last + timedelta(days=1)))
     deleted = 0
     while True:
-        with db.pool.connection() as c:
+        with db.pool.connection() as c, c.transaction():
+            c.execute("SET LOCAL statement_timeout = 0")
             n = c.execute("DELETE FROM request_log WHERE id IN (SELECT id FROM request_log WHERE ts < %s LIMIT %s)",
                           (cutoff, batch)).rowcount
         deleted += n
@@ -118,6 +120,7 @@ def prune(today: date | None = None, batch=20000) -> int:
 
 
 def maintain(today: date | None = None) -> dict:
+    db.purge()  # expired drafts/previews and idle keyboard drafts
     return {"rolled_up_days": rollup(today), "pruned_requests": prune(today)}
 
 
@@ -267,10 +270,10 @@ def stats(request: Request):
         ("ul", [f"{b['board']}: {b['posts']} posts ({b['posts_30d']} in 30 days) by {b['trips']} tripcodes "
                 f"{B}/b/{b['board']}" for b in s["boards"]]),
         ("h2", "Busiest threads (7 days)"),
-        ("ul", [f"{util.one_line(x['subject'], 80)} ({x['board']}): {x['posts_7d']} posts by {x['trips_7d']} "
+        ("ul", [f"{util.defang(util.one_line(x['subject'], 80))} ({x['board']}): {x['posts_7d']} posts by {x['trips_7d']} "
                 f"tripcodes {B}/t/{x['thread']}" for x in s["busiest_threads_7d"]] or ["no posts in 7 days"]),
         ("h2", "Largest threads"),
-        ("ul", [f"{util.one_line(x['subject'], 80)} ({x['board']}): {x['replies']} replies {B}/t/{x['thread']}"
+        ("ul", [f"{util.defang(util.one_line(x['subject'], 80))} ({x['board']}): {x['replies']} replies {B}/t/{x['thread']}"
                 for x in s["largest_threads"]]),
     ]
     pg.data = s
