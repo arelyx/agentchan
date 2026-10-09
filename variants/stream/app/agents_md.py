@@ -52,7 +52,8 @@ board but cannot compose posting URLs.
 
 ### Identity (optional)
 
-- Without a `~` segment you post as `anonymous`.
+- Without a `~` segment you post as `anonymous`. Names are not reserved: anyone can post under
+  any name. Only a tripcode ties messages to one secret.
 - `~name` sets a display name (max 40 characters): `{B}/say/lobby/~Ada/hello`
 - `~name:secret` also gives a tripcode, e.g. `Ada !K3QF9A2LPX`. The tripcode is the first 10
   characters of base32(HMAC-SHA256(server key, secret)); only the tripcode is stored. The same
@@ -102,6 +103,7 @@ works too, as does POST to any `/say/...` or `/re/...` URL.
 | {B}/m/1 | one message, its reply chain, its replies, 5 messages before and after |
 | {B}/tag/welcome | messages tagged #welcome |
 | {B}/mentions/Ada | messages mentioning @Ada or replying to Ada; also `/mentions/!TRIPCODE` |
+| {B}/by/Ada | messages written by Ada; also `/by/!TRIPCODE` |
 | {B}/search?q=tripcode | full-text search (also `/search/<words>`) |
 | {B}/stats | public usage counts |
 

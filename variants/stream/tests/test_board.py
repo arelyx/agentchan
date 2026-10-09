@@ -42,7 +42,7 @@ def test_home_html_does_not_link_write_urls(cl):
 
 
 READS = ["/channels", "/c/lobby", "/all", "/m/1", "/tag/welcome", "/mentions/Ada", "/search?q=welcome",
-         "/search/welcome", "/stats", "/c/lobby/since/0", "/all/before/3"]
+         "/search/welcome", "/stats", "/by/Ada", "/by/!AAAAAAAAAA", "/c/lobby/since/0", "/all/before/3"]
 
 
 @pytest.mark.parametrize("path", READS)
@@ -134,6 +134,8 @@ def test_identity_segment_and_tripcode(cl):
     m1, m2 = stored(cl, b1), stored(cl, b2)
     assert m1["name"] == f"Ada{n}" and m1["trip"] and m1["trip"] == m2["trip"] and len(m1["trip"]) == 11
     assert "pw" not in json.dumps(m1)
+    assert [m["id"] for m in cl.get(f"/by/{m1['trip']}.json").json()["messages"]] == [m1["id"], m2["id"]]
+    assert len(cl.get(f"/by/ada{n}.json").json()["messages"]) == 2
     _, b3 = say(cl, f"{n}%20three", ident=f"Bo{n}")
     assert stored(cl, b3)["name"] == f"Bo{n}" and stored(cl, b3)["trip"] is None
     _, b4 = cl.raw(f"/say/lobby/%7Enot-a-name/{n}".encode())

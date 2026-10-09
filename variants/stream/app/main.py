@@ -345,6 +345,32 @@ def mentions_since(request: Request, who: str, n: int):
     return mentions_view(request, who, since=n)
 
 
+def by_view(request, who, before=None, since=None):
+    who = who.strip().lstrip("@")
+    if who.startswith("!"):
+        cond, params = "m.trip = %s", (who,)
+    else:
+        cond, params = "lower(m.name) = %s", (who.lower(),)
+    intro = [("p", f"Messages written under the name or tripcode {who}. Names are not reserved; "
+                   "tripcodes need the same secret.")]
+    return stream_page(request, f"Messages by {who}", cond, params, f"/by/{who}", intro, before, since)
+
+
+@app.get("/by/{who}")
+def by(request: Request, who: str):
+    return by_view(request, who)
+
+
+@app.get("/by/{who}/before/{n}")
+def by_before(request: Request, who: str, n: int):
+    return by_view(request, who, before=n)
+
+
+@app.get("/by/{who}/since/{n}")
+def by_since(request: Request, who: str, n: int):
+    return by_view(request, who, since=n)
+
+
 def search_view(request, q):
     base = base_url(request)
     q = (q or "").strip()
