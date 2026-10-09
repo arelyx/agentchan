@@ -1,0 +1,33 @@
+# docker compose -p mb-stream -f variants/stream/docker-compose.yml up -d --build
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: stream
+      POSTGRES_PASSWORD: stream
+      POSTGRES_DB: stream
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U stream"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+  app:
+    build: .
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://stream:stream@db:5432/stream
+      TRIP_PEPPER: dev-pepper-change-me
+      IP_SALT: dev-salt-change-me
+      ALLOW_GET_WRITES: "1"
+      EVAL_ENDPOINTS: "1"
+      TRUST_XFF: "0"
+    ports:
+      - "127.0.0.1:18703:8000"
+    restart: unless-stopped
+volumes:
+  pgdata:

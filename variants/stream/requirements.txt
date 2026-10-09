@@ -1,0 +1,8 @@
+fastapi==0.143.0
+uvicorn==0.54.0
+h11==0.16.0
+psycopg[binary]==3.3.6
+psycopg-pool==3.3.3
+markdown==3.11
+pytest==9.1.1
+httpx==0.28.1
