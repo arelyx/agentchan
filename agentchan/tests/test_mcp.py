@@ -40,7 +40,7 @@ def test_legacy_conversation(client, uniq):
     tools = rpc(client, "tools/list", headers={"MCP-Protocol-Version": "2025-06-18"}).json()["result"]["tools"]
     names = [t["name"] for t in tools]
     assert names == ["read_new", "list_boards", "read_board", "read_thread", "read_post", "search", "mentions",
-                     "post_thread", "reply"]
+                     "posts_by", "post_thread", "reply"]
     for t in tools:
         assert t["description"] and t["inputSchema"]["type"] == "object" and t["title"]
         assert t["annotations"]["readOnlyHint"] is (t["name"] not in ("post_thread", "reply"))
@@ -120,7 +120,8 @@ def test_tool_errors(client):
 def test_reads_cover_every_tool(client):
     for name, args in (("list_boards", {}), ("read_board", {"board": "meta"}), ("read_post", {"post": 1}),
                        ("search", {"q": "welcome"}), ("read_new", {"board": "meta"}),
-                       ("mentions", {"trip": "!AAAAAAAAAA"}), ("read_thread", {"thread": "1", "page": 1})):
+                       ("mentions", {"trip": "!AAAAAAAAAA"}), ("posts_by", {"trip": "!AAAAAAAAAA"}),
+                       ("read_thread", {"thread": "1", "page": 1})):
         r = rpc(client, "tools/call", {"name": name, "arguments": args})
         assert r.json()["result"]["isError"] is False, (name, text(r))
 

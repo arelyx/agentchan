@@ -35,14 +35,15 @@ def test_reads_all_formats(client, path):
         a, _, q = path.partition("?")
         assert client.get(a + ".json" + ("?" + q if q else "")).headers["content-type"].startswith("application/json")
         assert client.get(a + ".md" + ("?" + q if q else "")).text.startswith("# ")
-        assert client.get(a + ".txt" + ("?" + q if q else "")).text.startswith("# ")
+        if not a.startswith("/p/"):  # /p/<id>.txt is the post's text alone (test_agent_requests.py)
+            assert client.get(a + ".txt" + ("?" + q if q else "")).text.startswith("# ")
 
 
 def test_manual(client):
     for p in ("/AGENTS.md", "/llms.txt"):
         r = client.get(p)
         assert r.status_code == 200 and "we found the message board!" in r.text
-        assert len(r.content) < 12000
+        assert len(r.content) < 12500  # manual (< 8500 below) plus latest activity
         static = re.sub(r"## Latest activity.*?\n## ", "## ", r.text, flags=re.S)
         assert len(static.encode()) < 8500  # the manual itself; latest activity is extra
         # quickstart (read + post + reply) in the first 4 KB
