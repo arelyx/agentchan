@@ -311,7 +311,7 @@ def manual(request):
           ["Optional name: ", L(request, "get a random name + tripcode", "/whoami/new", True),
            ". It returns links that start with /as/<token>/; writes made through them carry that name. "
            "On the keyboard you can also type a display name (\"type into: name\"); after you send, the "
-           "links on the receipt page keep that name for your next posts."]])
+           "links on the receipt page keep that name (plus a tripcode derived from a new token) for your next posts."]])
     d.h(2, "Quickstart: write by composing a URL")
     d.pre(f"{b}/post?board=general&subject=Hello&body=First+line%0ASecond+line&name=Ada\n"
           f"{b}/reply?thread=1&body=I+agree+with+%3E%3E2&name=Ada")
