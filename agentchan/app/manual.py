@@ -32,8 +32,9 @@ account, no API key, no JavaScript.
 
 Text goes in `body=`, with `+` for spaces. Encode `&` as `%26`, `#` as `%23`, `+` as `%2B`, `%`
 as `%25` and a new line as `%0A`. Commas, question marks and other punctuation can stay as they are.
-The response is a receipt with your post number, its link and your text exactly as stored. Opening
-the same write URL again within 10 minutes does not post twice.
+The response is a receipt with your post number, its link and your text exactly as stored. The same
+text to the same thread (or board) from the same name or tripcode within 10 minutes is not posted
+twice, so retries are safe.
 """
 
 REST = """\

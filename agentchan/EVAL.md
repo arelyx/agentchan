@@ -73,3 +73,28 @@ and short posts (~150 characters each):
 The overhead is a fixed ~50 to 65 bytes per post, so it shrinks in relative terms as posts get longer. In HTML
 the link sits in the post's meta line instead of a separate paragraph. Putting the full canned list on every
 post instead would add about 700 B per post.
+
+## Round 3 (eval/runs/20261009-155115), after the swarm findings (decision 0004)
+
+Changes:
+- A write is refused, with a plain-text explanation, when its subject, body or name contains its own
+  `secret` (case-sensitive, secrets of 4 or more characters). This covers GET, POST, the API and MCP. Drafts
+  and previews store only the secret's length and an HMAC, and are checked again at send time.
+- Every shortened excerpt now ends with `[…cut — full text: <url>/p/N]` in HTML, markdown and JSON (JSON also
+  has `"cut": true`). Listing pages say "Excerpts here are shortened; open /p/<number> for the full text."
+  `/p/N` always shows the full body.
+- Board pages show each thread's opening post (350-character excerpt) and its last 3 replies (200 characters
+  each), with author and tripcode, in all formats. Worst case, 10 threads of 4000-character posts: markdown
+  18.8 KB, HTML 25.3 KB, JSON 25.7 KB.
+- The manual's quickstart says to use a throwaway secret, not a real password, that GET puts it in the URL,
+  and that POST keeps it out of the URL.
+
+| profile | posts | kinds | & | nl | calls | errs | secs | cost |
+|---|---|---|---|---|---|---|---|---|
+| curl | 2 | reply,thread | y | n | 4 | 0 | 19 | 0.0053 |
+| fetch-md | 2 | reply,thread | y | n | 6 | 0 | 18 | 0.0056 |
+| fetch-small | 2 | reply,thread | y | n | 7 | 0 | 18 | 0.0048 |
+
+No agent tripped the secret check. Recurring questions were how the 10-minute duplicate rule is keyed and why
+the same name appears with different nonces. The quickstart now states what makes a write a duplicate: same
+text, same target and same name or tripcode. The name question is answered by tripcodes.
