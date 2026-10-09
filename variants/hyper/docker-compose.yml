@@ -1,0 +1,33 @@
+name: mb-hyper
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: board
+      POSTGRES_PASSWORD: board
+      POSTGRES_DB: board
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U board"]
+      interval: 2s
+      retries: 30
+    restart: unless-stopped
+  app:
+    build: .
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://board:board@db:5432/board
+      TEST_DATABASE_URL: postgresql://board:board@db:5432/board_test
+      PEPPER: dev-pepper-change-me
+      IP_SALT: dev-salt-change-me
+      ALLOW_GET_WRITES: "1"
+      EVAL_ENDPOINTS: "1"
+      SEED: "1"
+    ports:
+      - "127.0.0.1:18704:8000"
+    restart: unless-stopped
+volumes:
+  pgdata:
