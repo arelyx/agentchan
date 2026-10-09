@@ -1,4 +1,5 @@
 """agentchan: an imageboard for AI agents. Reads and writes over plain GET (POST also accepted)."""
+import asyncio
 import json
 import re
 import secrets
@@ -23,7 +24,9 @@ async def lifespan(app):
         seed.ensure()
     for r in db.all("SELECT body FROM posts ORDER BY id DESC LIMIT 5000")[::-1]:
         keyboard.BIGRAMS.add(r["body"])
+    task = asyncio.create_task(ops.maintenance_loop())  # request-log rollup and retention
     yield
+    task.cancel()
 
 
 app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
@@ -89,6 +92,8 @@ async def suffix_and_log(request: Request, call_next):
         request.state.via = "mcp"
     if response is None:
         response = await call_next(request)
+    if path == "/healthz":  # container healthcheck: not logged
+        return response
     try:
         await run_in_threadpool(
             db.run, "INSERT INTO request_log(method,path,qlen,ua,ip_hash,status,ms) VALUES (%s,%s,%s,%s,%s,%s,%s)",
@@ -268,7 +273,7 @@ def robots():
            + "".join(f"User-agent: {b}\n" for b in bots)
            + "".join(f"Disallow: {p}\n" for p in (
                "/post", "/reply", "/confirm", "/draft", "/say/", "/ack/", "/+1/", "/compose/", "/k/",
-               "/whoami/new", "/as/", "/mcp", "/api/v1/threads", "/api/v1/replies", "/_eval"))
+               "/whoami/new", "/as/", "/mcp", "/api/v1/threads", "/api/v1/replies", "/_eval", "/_admin"))
            + "Allow: /\n")
     return PlainTextResponse(txt)
 
@@ -597,39 +602,7 @@ def search(request: Request):
     return respond(pg, request)
 
 
-@app.get("/stats")
-def stats(request: Request):
-    tot = db.one("SELECT (SELECT count(*) FROM posts) AS posts, (SELECT count(*) FROM threads) AS threads, "
-                 "(SELECT count(*) FROM request_log) AS requests, (SELECT count(DISTINCT trip) FROM posts) AS trips")
-    days = db.all("""SELECT d::date AS day,
-        (SELECT count(*) FROM posts WHERE created_at::date = d::date AND NOT is_seed) AS posts,
-        (SELECT count(*) FROM request_log WHERE ts::date = d::date) AS requests
-        FROM generate_series(now()::date - 13, now()::date, '1 day') d ORDER BY d DESC""")
-    fam = {}
-    for r in db.all("SELECT ua, count(*) AS n FROM request_log WHERE ts > now() - interval '30 days' GROUP BY ua"):
-        f = util.ua_family(r["ua"])
-        fam[f] = fam.get(f, 0) + r["n"]
-    pfam = {}
-    for r in db.all("SELECT ua, count(*) AS n FROM posts WHERE NOT is_seed GROUP BY ua"):
-        f = util.ua_family(r["ua"])
-        pfam[f] = pfam.get(f, 0) + r["n"]
-    trans = db.all("SELECT coalesce(transport,'seed') AS t, count(*) AS n FROM posts GROUP BY 1 ORDER BY 2 DESC")
-    srt = lambda d: sorted(d.items(), key=lambda kv: -kv[1])  # noqa: E731
-    pg = Page("Stats", canonical="/stats")
-    pg.blocks = [
-        ("p", f"{tot['posts']} posts in {tot['threads']} threads, {tot['trips']} distinct tripcodes, "
-              f"{tot['requests']} requests logged."),
-        ("h2", "Last 14 days (UTC; posts exclude seed posts)"),
-        ("ul", [f"{d['day']}: {d['posts']} posts, {d['requests']} requests" for d in days]),
-        ("h2", "Requests by client family (30 days)"), ("ul", [f"{k}: {v}" for k, v in srt(fam)] or ["none"]),
-        ("h2", "Posts by client family"), ("ul", [f"{k}: {v}" for k, v in srt(pfam)] or ["none"]),
-        ("h2", "Posts by transport"), ("ul", [f"{r['t']}: {r['n']}" for r in trans]),
-    ]
-    pg.data = {"totals": tot, "days": [{"day": str(d["day"]), "posts": d["posts"], "requests": d["requests"]}
-                                       for d in days],
-               "requests_by_client": fam, "posts_by_client": pfam,
-               "posts_by_transport": {r["t"]: r["n"] for r in trans}}
-    return respond(pg, request)
+# /stats is in ops.py
 
 
 # ------------------------------------------------------------------ writes
@@ -1014,4 +987,4 @@ def eval_posts(request: Request):
     return Response(util.jdump(out), media_type="application/json")
 
 
-from . import api, links  # noqa: E402,F401  (register routes)
+from . import api, links, ops  # noqa: E402,F401  (register routes)

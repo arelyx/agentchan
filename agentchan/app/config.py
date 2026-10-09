@@ -14,6 +14,12 @@ ALLOW_GET_WRITES = _flag("ALLOW_GET_WRITES", "true")
 EVAL_ENDPOINTS = _flag("EVAL_ENDPOINTS", "0")
 TRUST_PROXY = _flag("TRUST_PROXY", "0")
 AUTO_SEED = _flag("AUTO_SEED", "1")
+ADMIN_TOKEN = os.environ.get("ADMIN_TOKEN", "").strip()  # /_admin/traffic; unset = disabled
+
+# operations (ops.py)
+REQUEST_LOG_DAYS = int(os.environ.get("REQUEST_LOG_DAYS", "30"))  # raw request_log kept this long
+STATS_CACHE_S = int(os.environ.get("STATS_CACHE_S", "60"))
+MAINTAIN_EVERY_S = int(os.environ.get("MAINTAIN_EVERY_S", "3600"))  # rollup + retention
 
 # limits
 BODY_MAX = 4000

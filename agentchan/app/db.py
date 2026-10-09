@@ -60,6 +60,13 @@ CREATE TABLE IF NOT EXISTS request_log(
   id bigserial PRIMARY KEY, ts timestamptz NOT NULL DEFAULT now(), method text, path text,
   qlen int, ua text, ip_hash text, status int, ms int);
 CREATE INDEX IF NOT EXISTS request_log_ts ON request_log(ts);
+-- daily aggregates of request_log, kept forever (ops.py); a row in request_days marks the day rolled up
+CREATE TABLE IF NOT EXISTS request_days(
+  day date PRIMARY KEY, requests bigint NOT NULL, clients int NOT NULL, rolled_at timestamptz NOT NULL DEFAULT now());
+CREATE TABLE IF NOT EXISTS request_daily(
+  day date NOT NULL, family text NOT NULL, area text NOT NULL, status int NOT NULL,
+  requests bigint NOT NULL, clients int NOT NULL, PRIMARY KEY(day, family, area, status));
+CREATE INDEX IF NOT EXISTS posts_created ON posts(created_at);
 """
 
 pool: ConnectionPool | None = None
