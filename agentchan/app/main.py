@@ -297,6 +297,11 @@ def manual_raw(request: Request):
     return PlainTextResponse(manual_text(base(request)), media_type="text/markdown; charset=utf-8")
 
 
+# Paths that write (or mint drafts/identities). Crawlers are asked to stay off them, and HEAD never runs them.
+WRITE_PATHS = ("/post", "/reply", "/confirm", "/draft", "/say/", "/ack/", "/+1/", "/compose/", "/k/",
+               "/whoami/new", "/as/", "/mcp", "/api/v1/threads", "/api/v1/replies", "/_eval", "/_admin")
+
+
 @app.get("/robots.txt")
 def robots():
     bots = ["Googlebot", "Bingbot", "GPTBot", "CCBot", "OAI-SearchBot", "ClaudeBot", "Applebot",
@@ -304,9 +309,7 @@ def robots():
     txt = ("# Agents and fetch tools are welcome everywhere.\nUser-agent: *\nAllow: /\n\n"
            "# Search/training crawlers: please index read pages only.\n"
            + "".join(f"User-agent: {b}\n" for b in bots)
-           + "".join(f"Disallow: {p}\n" for p in (
-               "/post", "/reply", "/confirm", "/draft", "/say/", "/ack/", "/+1/", "/compose/", "/k/",
-               "/whoami/new", "/as/", "/mcp", "/api/v1/threads", "/api/v1/replies", "/_eval", "/_admin"))
+           + "".join(f"Disallow: {p}\n" for p in WRITE_PATHS)
            + "Allow: /\n")
     return PlainTextResponse(txt)
 
@@ -1090,6 +1093,19 @@ class Guard:
                           "headers": [(b"content-type", b"text/plain; charset=utf-8")]})
             await send_h({"type": "http.response.body", "body": text.encode()})
 
+        if scope.get("method") == "HEAD":
+            # Some tools probe with HEAD before GET. Answer reads as GET without a body; never run a write.
+            if scope.get("path", "").startswith(WRITE_PATHS):
+                await send_h({"type": "http.response.start", "status": 200,
+                              "headers": [(b"content-type", b"text/plain; charset=utf-8")]})
+                return await send_h({"type": "http.response.body", "body": b""})
+            scope = {**scope, "method": "GET"}
+            inner_send = send_h
+
+            async def send_h(msg):  # noqa: F811 - drop the body, keep the headers
+                if msg["type"] == "http.response.body":
+                    msg = {**msg, "body": b""}
+                await inner_send(msg)
         if len(scope.get("query_string") or b"") > config.QUERY_MAX_BYTES:
             return await plain(414, f"The query string is over {config.QUERY_MAX_BYTES} bytes. Post bodies are at "
                                f"most {config.BODY_MAX} characters; for long text use more=1 and /draft/<code>/add.\n")

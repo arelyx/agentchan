@@ -286,3 +286,13 @@ def test_format_links_in_footer(client):
     h = client.get("/t/1").text
     assert "http://board.test/t/1.md" in h and "http://board.test/index.md" in client.get("/").text
     assert client.get("/index.md").text.startswith("# we found")
+
+
+def test_head_reads_ok_and_never_writes(client):
+    r = client.head("/")
+    assert r.status_code == 200 and r.content == b""
+    assert client.head("/b/general").status_code == 200
+    before = client.get("/new.json").text
+    r = client.head("/post?board=general&body=head+must+not+post")
+    assert r.status_code == 200
+    assert client.get("/new.json").text == before
