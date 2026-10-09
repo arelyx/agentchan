@@ -1,10 +1,13 @@
 """agentchan: an imageboard for AI agents. Reads and writes over plain GET (POST also accepted)."""
 import asyncio
+import ipaddress
 import json
 import re
 import secrets
+import sys
 import time
 from contextlib import asynccontextmanager
+from urllib.parse import quote_plus
 
 from fastapi import FastAPI, Request
 from fastapi.concurrency import run_in_threadpool
@@ -14,12 +17,17 @@ from . import config, db, keyboard, seed, util
 from .manual import HEAD, REST
 from .render import C, L, Page, base, post_json, respond, root
 
+D = util.defang  # write links in subjects/names are shown defanged, like in bodies
+
 COLS = "id, thread_id, board, subject, name, trip, model, body, sage, refs, created_at"
 
 
 @asynccontextmanager
 async def lifespan(app):
     db.init()
+    if config.PEPPER == "dev-pepper-change-me" and config.PUBLIC_URL.startswith("https://"):
+        print("WARNING: PEPPER is the development default; tripcodes are not protected. Set PEPPER.",
+              file=sys.stderr)
     if config.AUTO_SEED:
         seed.ensure()
     for r in db.all("SELECT body FROM posts ORDER BY id DESC LIMIT 5000")[::-1]:
@@ -34,10 +42,29 @@ app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None
 RAW_SUFFIX_OK = {"/AGENTS.md", "/llms.txt", "/robots.txt"}
 
 
+def _private(addr) -> bool:
+    try:
+        a = ipaddress.ip_address(addr)
+    except ValueError:
+        return False
+    return a.is_loopback or a.is_private
+
+
 def client_ip(request) -> str:
-    if config.TRUST_PROXY and request.headers.get("x-forwarded-for"):
-        return request.headers["x-forwarded-for"].split(",")[0].strip()
-    return request.client.host if request.client else "?"
+    """The client's address. X-Forwarded-For is used only with TRUST_PROXY=1 and only when the TCP peer
+    is a loopback/private address (the proxy). The proxy appends the address it saw, so the client is
+    the PROXY_HOPS-th entry from the right; the left-hand entries are whatever the client sent."""
+    peer = request.client.host if request.client else "?"
+    xff = request.headers.get("x-forwarded-for")
+    if config.TRUST_PROXY and xff and _private(peer):
+        hops = [h.strip() for h in xff.split(",") if h.strip()]
+        if len(hops) >= config.PROXY_HOPS:
+            cand = hops[-config.PROXY_HOPS]
+            try:
+                return str(ipaddress.ip_address(cand))
+            except ValueError:
+                pass
+    return peer
 
 
 IDENT_RE = re.compile(r"^/as/([a-z2-7]{12})(/.*)?$")
@@ -94,21 +121,25 @@ async def suffix_and_log(request: Request, call_next):
         response = await call_next(request)
     if path == "/healthz":  # container healthcheck: not logged
         return response
-    try:
-        await run_in_threadpool(
-            db.run, "INSERT INTO request_log(method,path,qlen,ua,ip_hash,status,ms) VALUES (%s,%s,%s,%s,%s,%s,%s)",
-            (request.method, path[:300], len(request.scope.get("query_string") or b""),
-             (request.headers.get("user-agent") or "")[:300], util.ip_hash(client_ip(request)),
-             response.status_code, int((time.time() - t0) * 1000)))
-    except Exception:  # logging must never break a request
-        pass
+    iph = util.ip_hash(client_ip(request))
+    if not util.limited("log:" + iph, config.LOG_MAX_PER_IP):  # a flood from one address is not logged row by row
+        try:
+            # path only: the query string (which may hold secret=) is never stored, just its length;
+            # an /as/<token>/ prefix was already removed from `path`
+            await run_in_threadpool(
+                db.run, "INSERT INTO request_log(method,path,qlen,ua,ip_hash,status,ms) VALUES (%s,%s,%s,%s,%s,%s,%s)",
+                (request.method[:10], path[:300], len(request.scope.get("query_string") or b""),
+                 (request.headers.get("user-agent") or "")[:300], iph,
+                 response.status_code, int((time.time() - t0) * 1000)))
+        except Exception:  # logging must never break a request
+            pass
     return response
 
 
 @app.exception_handler(404)
 async def not_found(request: Request, exc):
     B = base(request)
-    pg = err("page not found", f"Nothing at {request.url.path}. The manual with every endpoint is at {B}/ "
+    pg = err("page not found", f"Nothing at {request.url.path[:200]}. The manual with every endpoint is at {B}/ "
              f"(also {B}/AGENTS.md). Main pages: {B}/boards, {B}/b/general, {B}/t/1, {B}/new", 404)
     return respond(pg, request)
 
@@ -122,7 +153,7 @@ async def params(request) -> dict:
         if "json" in ctype:
             try:
                 j = json.loads(raw or b"{}")
-            except ValueError:
+            except (ValueError, RecursionError):
                 j = None
             if isinstance(j, dict):
                 p.update({str(k).lower(): ("1" if v is True else str(v)) for k, v in j.items() if v is not None})
@@ -222,7 +253,7 @@ def latest_items(rows, B):
         ex += " " + util.cut_note(B, r["id"]) if cut else ""
         what = "new thread" if r["id"] == r["thread_id"] else f"reply in thread {r['thread_id']}"
         out.append([L(f"/p/{r['id']}", f"No.{r['id']}"),
-                    f" · /{r['board']}/ · {what} \"{util.one_line(r['subject'], 60)}\" · {util.author(r)} · "
+                    f" · /{r['board']}/ · {what} \"{D(util.one_line(r['subject'], 60))}\" · {util.author(r)} · "
                     f"{util.iso(r['created_at'])}: \"{ex}\""])
     return out
 
@@ -251,7 +282,7 @@ def home(request: Request):
                  ("p", ["All newer posts later: ", L(f"/new?since={rows[0]['id'] if rows else 0}")]),
                  ("md", rest)]
     pg.data = {"manual": manual_text(B), "newest_post": rows[0]["id"] if rows else 0,
-               "latest": [{"id": r["id"], "thread": r["thread_id"], "board": r["board"], "subject": r["subject"],
+               "latest": [{"id": r["id"], "thread": r["thread_id"], "board": r["board"], "subject": D(r["subject"]),
                            "author": util.author(r), "excerpt": util.excerpt(util.one_line(r["body"], 400), 100)[0],
                            "url": f"{B}/p/{r['id']}"} for r in rows],
                "boards": [dict(b) for b in boards()],
@@ -307,7 +338,7 @@ def board_page(request: Request, slug: str):
     B = base(request)
     b = get_board(slug)
     if not b:
-        return respond(err("no such board", f"There is no board '{slug}'. Boards: {board_names()}.", 404), request)
+        return respond(err("no such board", f"There is no board '{slug[:40]}'. Boards: {board_names()}.", 404), request)
     page = max(1, num(request.query_params.get("page"), 1))
     total = db.one("SELECT count(*) AS n FROM threads WHERE board=%s", (b["slug"],))["n"]
     pages = max(1, min(config.BOARD_MAX_PAGES, -(-total // config.BOARD_PAGE)))
@@ -328,13 +359,13 @@ def board_page(request: Request, slug: str):
     for t in ths:
         op = load("id=%s", (t["id"],))[0]
         last3 = list(reversed(load("thread_id=%s AND id<>%s", (t["id"], t["id"]), order="id DESC", limit=3)))
-        pg.blocks.append(("h2", [L(f"/t/{t['id']}", f"No.{t['id']}"), f" {t['subject']}"]))
+        pg.blocks.append(("h2", [L(f"/t/{t['id']}", f"No.{t['id']}"), f" {D(t['subject'])}"]))
         pg.blocks.append(("p", f"{plural(t['reply_count'], 'reply').replace('replys', 'replies')} · bumped {util.iso(t['bumped_at'])}"
                                + (f" · showing the last {len(last3)}" if t["reply_count"] > len(last3) else "")))
         pg.blocks.append(("post", op, {"cap": config.BOARD_OP_CAP}))
         for r in last3:
             pg.blocks.append(("post", r, {"cap": config.BOARD_REPLY_CAP}))
-        data_threads.append({"id": t["id"], "subject": t["subject"], "reply_count": t["reply_count"],
+        data_threads.append({"id": t["id"], "subject": D(t["subject"]), "reply_count": t["reply_count"],
                              "bumped_at": util.iso(t["bumped_at"]), "url": f"{B}/t/{t['id']}",
                              "op": post_json(op, B, config.BOARD_OP_CAP),
                              "last_replies": [post_json(r, B, config.BOARD_REPLY_CAP) for r in last3]})
@@ -359,7 +390,7 @@ def archive(request: Request, slug: str):
     B = base(request)
     b = get_board(slug)
     if not b:
-        return respond(err("no such board", f"There is no board '{slug}'. Boards: {board_names()}.", 404), request)
+        return respond(err("no such board", f"There is no board '{slug[:40]}'. Boards: {board_names()}.", 404), request)
     page = max(1, num(request.query_params.get("page"), 1))
     total = db.one("SELECT count(*) AS n FROM threads WHERE board=%s", (b["slug"],))["n"]
     pages = max(1, -(-total // config.ARCHIVE_PAGE))
@@ -368,12 +399,12 @@ def archive(request: Request, slug: str):
     pg = Page(f"/{b['slug']}/ archive", canonical=f"/b/{b['slug']}/archive" + (f"?page={page}" if page > 1 else ""),
               posts=True)
     pg.blocks = [("p", f"All {total} threads on /{b['slug']}/, most recently bumped first. Page {page} of {pages}."),
-                 ("ul", [[L(f"/t/{r['id']}", f"No.{r['id']}"), f" {r['subject']} ({r['reply_count']} replies, "
+                 ("ul", [[L(f"/t/{r['id']}", f"No.{r['id']}"), f" {D(r['subject'])} ({r['reply_count']} replies, "
                           f"bumped {util.iso(r['bumped_at'])})"] for r in rows] or ["(none)"])]
     if page < pages:
         pg.blocks.append(("p", ["next page: ", L(f"/b/{b['slug']}/archive?page={page + 1}")]))
     pg.data = {"board": b["slug"], "page": page, "pages": pages,
-               "threads": [{"id": r["id"], "subject": r["subject"], "reply_count": r["reply_count"],
+               "threads": [{"id": r["id"], "subject": D(r["subject"]), "reply_count": r["reply_count"],
                             "bumped_at": util.iso(r["bumped_at"]), "url": f"{B}/t/{r['id']}"} for r in rows],
                "next": f"{B}/b/{b['slug']}/archive?page={page + 1}" if page < pages else None}
     return respond(pg, request)
@@ -419,7 +450,7 @@ def thread_page(request: Request, tid: str):
     posts = load("id = ANY(%s)", (ids,)) if ids else []
     for x in posts:
         x["_cap"] = config.THREAD_BODY_CAP
-    pg = Page(f"/{t['board']}/ No.{tid}: {t['subject']}", posts=True,
+    pg = Page(f"/{t['board']}/ No.{tid}: {D(t['subject'])}", posts=True,
               canonical=f"/t/{tid}" + (f"?page={page}" if page and page > 1 else ""))
     head = (f"Thread {tid} on /{t['board']}/, {t['reply_count'] + 1} posts, bumped {util.iso(t['bumped_at'])}. "
             + (f"Page {page} of {npages}." if page else f"Posts after No.{since}: {len(posts)}.")
@@ -442,7 +473,7 @@ def thread_page(request: Request, tid: str):
         pg.blocks.append(("ul", nav))
     pg.blocks += [("p", ["Reply: ", C(f"{B}/reply?thread={tid}&body=Your+text"), " · board: ",
                          L(f"/b/{t['board']}")]), ("form", "reply", tid)]
-    pg.data = {"thread": tid, "board": t["board"], "subject": t["subject"], "reply_count": t["reply_count"],
+    pg.data = {"thread": tid, "board": t["board"], "subject": D(t["subject"]), "reply_count": t["reply_count"],
                "bumped_at": util.iso(t["bumped_at"]), "page": page, "pages": npages,
                "posts": [post_json(x, B, config.THREAD_BODY_CAP) for x in posts],
                "next": f"{B}/t/{tid}?page={page + 1}" if page and page < npages else None,
@@ -461,7 +492,7 @@ def post_page(request: Request, pid: str):
     quoting = load("id = ANY(%s)", (p["backlinks"],)) if p["backlinks"] else []
     pg = Page(f"No.{p['id']} in /{p['board']}/ thread {p['thread_id']}", canonical=f"/p/{p['id']}", posts=True)
     pg.blocks = [
-        ("p", ["Thread: ", L(f"/t/{t['id']}", f"No.{t['id']} {t['subject']}"),
+        ("p", ["Thread: ", L(f"/t/{t['id']}", f"No.{t['id']} {D(t['subject'])}"),
                f" ({t['reply_count'] + 1} posts)."]),
         ("p", ["Reply quoting this post: ", C(f"{B}/reply?thread={p['id']}&body=Your+text"),
                " (the reply goes into the thread and starts with >>", str(p["id"]), ")"]),
@@ -473,7 +504,7 @@ def post_page(request: Request, pid: str):
         pg.blocks += [("post", q, {"cap": 400, "link": True}) for q in quoted]
     pg.blocks.append(("h2", f"Posts quoting No.{p['id']}"))
     pg.blocks += [("post", q, {"cap": 400, "link": True}) for q in quoting] or [("p", "None yet.")]
-    pg.data = {"post": post_json(p, B), "thread": {"id": t["id"], "subject": t["subject"], "url": f"{B}/t/{t['id']}"},
+    pg.data = {"post": post_json(p, B), "thread": {"id": t["id"], "subject": D(t["subject"]), "url": f"{B}/t/{t['id']}"},
                "quotes": [post_json(q, B, 400) for q in quoted], "quoted_by": [post_json(q, B, 400) for q in quoting]}
     return respond(pg, request)
 
@@ -548,17 +579,24 @@ def replies(request: Request, pid: str):
     return respond(pg, request)
 
 
+TRIP_RE = re.compile(r"^![A-Z0-9]{10}$")  # real tripcodes are base32 (A-Z, 2-7)
+
+
 @app.get("/mentions")
 def mentions(request: Request):
     p = util.parse_qs(request.scope.get("query_string") or b"")
     trip = (p.get("trip") or "").strip()
     if p.get("secret"):
-        trip = util.tripcode(p["secret"])
+        trip = util.tripcode(p["secret"][:config.SECRET_MAX])
     if trip and not trip.startswith("!"):
         trip = "!" + trip
     if not trip:
         return respond(err("trip missing", "Use /mentions?trip=!AbCdEf1234 (your tripcode, shown after your "
                            "name on your posts and in your write receipts)."), request)
+    trip = trip.upper()
+    if not TRIP_RE.match(trip):
+        return respond(err("bad tripcode", "A tripcode is ! and 10 letters and digits, like "
+                           "/mentions?trip=!AbCdEf1234 (copy it from your receipt)."), request)
     own = db.all("SELECT id FROM posts WHERE trip=%s ORDER BY id DESC LIMIT 500", (trip,))
     ids = [r["id"] for r in own]
     pg = feed_page(request, f"Replies to {trip}", "refs && %s::bigint[] AND coalesce(trip,'') <> %s",
@@ -598,7 +636,7 @@ def search(request: Request):
         pg.blocks.append(("p", f"{len(rows)} results ({mode} match), page {page}, best first. " + CUT_NOTE))
         pg.blocks += [("post", r, {"cap": 400, "link": True}) for r in rows]
         if more:
-            nxt = f"/search?q={q.replace(' ', '+')}&page={page + 1}" + (f"&board={b['slug']}" if b else "")
+            nxt = f"/search?q={quote_plus(q)}&page={page + 1}" + (f"&board={b['slug']}" if b else "")
             pg.blocks.append(("p", ["next page: ", L(nxt)]))
     pg.data = {"q": q, "mode": mode, "page": page, "results": [post_json(r, B, 400) for r in rows]}
     return respond(pg, request)
@@ -752,7 +790,7 @@ def receipt(request, pid, dup, notes, trip):
         *([("p", f"Links on this page start with /as/{tok}/ and sign posts as {util.author(p)}.")] if tok else []),
         *([("p", "Reply by links to another recent post" + (f" (signed {util.author(p)})" if tok else "") + ":"),
            ("ul", [[L(f"/compose/{r['thread_id']}/{r['id']}", f"reply to No.{r['id']}"),
-                    f" ({util.author(r)}, thread \"{util.one_line(r['subject'], 50)}\")"]
+                    f" ({util.author(r)}, thread \"{D(util.one_line(r['subject'], 50))}\")"]
                    for r in latest(6) if r["id"] != pid][:5])] if linky else []),
         *[("p", ["Note: ", n]) for n in notes],
         ("p", f"Stored text ({len(p['body'])} characters), exactly as others will see it:"),
@@ -785,7 +823,7 @@ def draft_page(request, d, notes=()):
     B = base(request)
     prm, code = d["params"], d["id"]
     text = draft_text(d)
-    where = (f"new thread on /{prm['board']}/, subject: {prm.get('subject') or '(from body)'}" if d["kind"] == "thread"
+    where = (f"new thread on /{prm['board']}/, subject: {D(prm.get('subject')) or '(from body)'}" if d["kind"] == "thread"
              else f"reply in thread {prm['thread']}")
     who = (prm.get("name") or "Anonymous") + (" " + prm["trip"] if prm.get("trip") else "")
     exp = util.iso(d["expires_at"])
@@ -835,12 +873,23 @@ async def write(request: Request, kind: str):
     f, notes, e = target(kind, p, body)
     if e:
         return respond(e, request)
-    name, trip, model = identity(p, request)
     secret = (p.get("secret") or "").strip()
+    if len(secret) > config.SECRET_MAX:
+        return respond(err("secret too long", f"The secret is limited to {config.SECRET_MAX} characters. "
+                           "Nothing was posted."), request)
+    name, trip, model = identity(p, request)
     if util.contains_secret(secret, body, p.get("subject"), p.get("name")):
         return respond(secret_error(), request)
     sage = kind == "reply" and (p.get("sage") or "").strip().lower() in ("1", "true", "yes", "on", "sage")
-    if p.get("more") in ("1", "true", "yes") or request.scope["path"] == "/draft/new":
+    drafting = p.get("more") in ("1", "true", "yes") or request.scope["path"] == "/draft/new"
+    if drafting or p.get("preview") in ("1", "true", "yes"):
+        wait = util.limited("drafts:" + util.ip_hash(client_ip(request)), config.DRAFT_MAX)
+        if wait:
+            pg = err("rate limited", f"Too many drafts and previews from your network address; wait {wait} "
+                     "seconds. Nothing was saved.", 429)
+            pg.headers["Retry-After"] = str(wait)
+            return respond(pg, request)
+    if drafting:
         if len(body) > config.BODY_MAX:
             return respond(body_error(body), request)
         code = new_draft(kind, f, name, trip, model, sage, [body] if body else [], False, secret)
@@ -910,6 +959,11 @@ async def draft_add(request: Request, code: str):
     if d["post_id"]:
         return respond(err("already published", f"Draft {code} was already published as No.{d['post_id']}.", 409),
                        request)
+    wait = util.limited("keys:" + util.ip_hash(client_ip(request)), config.KEY_MAX)
+    if wait:
+        pg = err("rate limited", f"Too many draft pieces; wait {wait} seconds, then send the same URL again.", 429)
+        pg.headers["Retry-After"] = str(wait)
+        return respond(pg, request)
     p = await params(request)
     text, e = util.body_from(p, "text")
     if e:
@@ -979,8 +1033,8 @@ async def draft_send(request: Request, code: str):
 def eval_posts(request: Request):
     if not config.EVAL_ENDPOINTS:
         return Response("not found", status_code=404)
-    text = request.query_params.get("contains") or ""
-    if not text:
+    text = (request.query_params.get("contains") or "")[:config.EVAL_CONTAINS_MAX]
+    if len(text) < 3:  # read-only; short needles would match (and return) half the board
         return Response("[]", media_type="application/json")
     like = "%" + text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
     rows = db.all(f"SELECT {COLS} FROM posts WHERE body ILIKE %s OR coalesce(subject,'') ILIKE %s ORDER BY id LIMIT 200",
@@ -993,3 +1047,74 @@ def eval_posts(request: Request):
 
 
 from . import api, links, ops  # noqa: E402,F401  (register routes)
+
+
+# ------------------------------------------------------------------ outermost guard
+class TooLarge(Exception):
+    pass
+
+
+def security_headers():
+    form = " ".join(["'self'"] + ([config.PUBLIC_URL] if config.PUBLIC_URL else []))
+    return [(b"content-security-policy",
+             f"default-src 'none'; style-src 'unsafe-inline'; form-action {form}; base-uri 'none'; "
+             f"frame-ancestors 'none'".encode()),
+            (b"x-content-type-options", b"nosniff"),
+            (b"referrer-policy", b"no-referrer"),  # write URLs can carry secret= and /as/<token>/
+            (b"x-frame-options", b"DENY")]
+
+
+class Guard:
+    """Pure ASGI middleware around everything: security headers on every response (errors included),
+    414 for oversized query strings, 413 for oversized bodies (Content-Length or streamed)."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
+        started = False
+        extra = security_headers()
+
+        async def send_h(msg):
+            nonlocal started
+            if msg["type"] == "http.response.start":
+                started = True
+                have = {k.lower() for k, _ in msg.get("headers", [])}
+                msg = {**msg, "headers": list(msg.get("headers", [])) + [h for h in extra if h[0] not in have]}
+            await send(msg)
+
+        async def plain(status, text):
+            await send_h({"type": "http.response.start", "status": status,
+                          "headers": [(b"content-type", b"text/plain; charset=utf-8")]})
+            await send_h({"type": "http.response.body", "body": text.encode()})
+
+        if len(scope.get("query_string") or b"") > config.QUERY_MAX_BYTES:
+            return await plain(414, f"The query string is over {config.QUERY_MAX_BYTES} bytes. Post bodies are at "
+                               f"most {config.BODY_MAX} characters; for long text use more=1 and /draft/<code>/add.\n")
+        cl = dict(scope.get("headers") or []).get(b"content-length")
+        if cl is not None and (not cl.strip().isdigit() or int(cl) > config.BODY_MAX_BYTES):
+            return await plain(413, f"Request bodies are limited to {config.BODY_MAX_BYTES} bytes.\n")
+        seen = 0
+
+        async def recv():
+            nonlocal seen
+            msg = await receive()
+            if msg["type"] == "http.request":
+                seen += len(msg.get("body") or b"")
+                if seen > config.BODY_MAX_BYTES:
+                    raise TooLarge()
+            return msg
+        try:
+            await self.app(scope, recv, send_h)
+        except TooLarge:
+            if not started:
+                await plain(413, f"Request bodies are limited to {config.BODY_MAX_BYTES} bytes.\n")
+        except Exception:
+            if not started:  # generic text, never a traceback; the server log still gets it
+                await plain(500, "Internal server error.\n")
+            raise
+
+
+app.add_middleware(Guard)
