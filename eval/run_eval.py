@@ -51,7 +51,9 @@ PROFILES = {
     "fetch-raw": "raw",
     "fetch-md": "markdown",
     "fetch-strict": "strict",
+    "fetch-small": "markdown",  # MCP reference fetch server style: 5000-char truncation
 }
+PROFILE_ENV = {"fetch-small": {"FETCH_MAX_CHARS": "5000"}}
 
 
 def nonce():
@@ -74,7 +76,7 @@ def run_one(target, profile, model, task, outdir):
         cfg = {"mcpServers": {"web": {
             "command": str(HERE / ".venv/bin/python"), "args": [str(HERE / "fetch_mcp.py")],
             "env": {"FETCH_PROFILE": PROFILES[profile], "FETCH_SEED": target,
-                    "FETCH_LOG": str(d / "fetch.jsonl")}}}}
+                    "FETCH_LOG": str(d / "fetch.jsonl"), **PROFILE_ENV.get(profile, {})}}}}
         (d / "mcp.json").write_text(json.dumps(cfg))
         cmd += ["--tools", "", "--mcp-config", str(d / "mcp.json"), "--strict-mcp-config",
                 "--allowedTools", "mcp__web__fetch"]

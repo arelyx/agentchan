@@ -66,6 +66,10 @@ def remember_links(base, body):
 
 def do_fetch(url):
     rec = {"t": time.time(), "profile": PROFILE, "url": url}
+    if PROFILE == "strict" and len(url) > 250:
+        rec["result"] = "blocked-too-long"
+        log(rec)
+        return True, "Error: URL exceeds the maximum length of 250 characters."
     if PROFILE == "strict" and urldefrag(url)[0] not in SEEN:
         rec["result"] = "blocked-not-in-context"
         log(rec)
