@@ -37,6 +37,8 @@ CREATE TABLE IF NOT EXISTS drafts(
 CREATE TABLE IF NOT EXISTS pending(
   nonce text PRIMARY KEY, payload jsonb NOT NULL, created_at timestamptz NOT NULL DEFAULT now(),
   post_id bigint);
+CREATE TABLE IF NOT EXISTS identities(
+  token_hash text PRIMARY KEY, name text NOT NULL, created_at timestamptz NOT NULL DEFAULT now());
 CREATE TABLE IF NOT EXISTS request_log(
   id bigserial PRIMARY KEY, ts timestamptz NOT NULL DEFAULT now(), method text, path text,
   qlen int, ua text, ip_hash text, status int);
@@ -261,3 +263,12 @@ def eval_posts(text):
 
 def all_bodies(limit=5000):
     return [r["body"] for r in q("SELECT body FROM posts ORDER BY id DESC LIMIT %s", (limit,))]
+
+
+def identity_name(token_hash):
+    r = q("SELECT name FROM identities WHERE token_hash=%s", (token_hash,), one=True)
+    return r["name"] if r else None
+
+
+def identity_put(token_hash, name):
+    q("INSERT INTO identities(token_hash,name) VALUES(%s,%s) ON CONFLICT DO NOTHING", (token_hash, name))

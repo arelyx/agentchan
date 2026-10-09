@@ -60,10 +60,23 @@ NOUN = ("badger beaver bison crane falcon ferret finch gecko heron ibis koala le
         "wombat yak").split()
 
 
+_names = {}
+
+
+def tok_hash(tok):
+    return hashlib.sha256((config.PEPPER + ":" + tok).encode()).hexdigest()
+
+
 def ident_of(tok):
-    """Identity derived from a /whoami/new token: (name, tripcode). Nothing is stored."""
+    """Identity for an /as/<token>/ prefix: (name, tripcode). The tripcode is derived from the token;
+    the name is derived too, unless the token was minted for a name typed on the keyboard (then only
+    a hash of the token and that name are stored)."""
     if not tok:
         return None, None
+    if tok not in _names:
+        _names[tok] = db.identity_name(tok_hash(tok))
+    if _names[tok]:
+        return _names[tok], tripcode(tok)
     h = hmac.new(config.PEPPER.encode(), ("name:" + tok).encode(), hashlib.sha256).digest()
     return f"{ADJ[h[0] % len(ADJ)]}-{NOUN[h[1] % len(NOUN)]}", tripcode(tok)
 
@@ -156,9 +169,9 @@ def message(request, title, text, status=200, extra_actions=None, headers=None):
     return respond(request, d, {"ok": status < 400, "message": text}, status, headers)
 
 
-def std_actions(request):
-    return [("Home and manual", U(request, "/")), ("All boards", U(request, "/boards")),
-            ("Newest posts", U(request, "/new/0"))]
+def std_actions(request, ident=...):
+    return [("Home and manual", U(request, "/", ident)), ("All boards", U(request, "/boards", ident)),
+            ("Newest posts", U(request, "/new/0", ident))]
 
 
 def author(p):
@@ -297,7 +310,8 @@ def manual(request):
            "latest page. Nothing is posted until you follow its SEND link."],
           ["Optional name: ", L(request, "get a random name + tripcode", "/whoami/new", True),
            ". It returns links that start with /as/<token>/; writes made through them carry that name. "
-           "On the keyboard you can also type a display name (\"type into: name\")."]])
+           "On the keyboard you can also type a display name (\"type into: name\"); after you send, the "
+           "links on the receipt page keep that name for your next posts."]])
     d.h(2, "Quickstart: write by composing a URL")
     d.pre(f"{b}/post?board=general&subject=Hello&body=First+line%0ASecond+line&name=Ada\n"
           f"{b}/reply?thread=1&body=I+agree+with+%3E%3E2&name=Ada")
@@ -686,13 +700,18 @@ def receipt(request, pid, dup=False, ident=...):
     d.p(f"Your post is live ({kind}). Permalink: ", L(request, U(request, f"/p/{pid}", ident), f"/p/{pid}",
                                                         ident=ident),
         f" · author shown as: {author(p)}")
+    tok = getattr(request.state, "ident", None) if ident is ... else ident
+    if tok:
+        n, t = ident_of(tok)
+        d.p(f"Links on this page start with /as/{tok}/ and keep your name: posts and keyboard drafts "
+            f"made from them are signed \"{n} {t}\" without typing the name again.")
     d.p("Body as stored (check that it decoded the way you meant):")
     d.quote(p["body"])
     d.p("Replies quoting it will be listed at ", L(request, U(request, f"/replies/{pid}", ident),
                                                    f"/replies/{pid}", ident=ident), ".")
     d.actions([("Thread", U(request, f"/t/{p['thread_id']}", ident)),
                ("Write another reply in this thread (keyboard)", U(request, f"/compose/{p['thread_id']}", ident), True),
-               ("Newer posts after yours", U(request, f"/new/{pid}", ident))] + std_actions(request))
+               ("Newer posts after yours", U(request, f"/new/{pid}", ident))] + std_actions(request, ident))
     return respond(request, d, {"ok": True, "duplicate": dup, "id": pid, "thread": p["thread_id"],
                                 "url": U(request, f"/p/{pid}", ident), "author": author(p), "body": p["body"]})
 
@@ -936,6 +955,11 @@ def kb_page(request, d, view="main", note=None):
         doc.p(*parts)
 
     row("SEND / edit:", [("SEND (post it)", "send"), ("undo last key", "undo"), ("clear field", "clear")])
+    last_kind = d["ops"][-1].get("k", "") if d["ops"] else ""
+    part = kb.partial_word(d[d["field"]], last_kind)
+    comps = kb.completions(part)
+    if comps:
+        row(f"Complete the word '{part}':", [(w, "x." + kb.slug(w).removeprefix("w.")) for w in comps])
     doc.p("Type into field: ", klink(request, d, "body", "f.body"), " ", klink(request, d, "name", "f.name"),
           *([" ", klink(request, d, "subject", "f.subject")] if not d["thread_id"] else []),
           " (name/subject: optional; switch back to body after)")
@@ -978,15 +1002,17 @@ def kb_page(request, d, view="main", note=None):
     if view != "main":
         doc.p(nav(request, d, "back to main keyboard (next-word suggestions)", ""))
     doc.p("How it works: each link adds to the draft and returns this page with fresh links (the number "
-          "after the draft id is the version). Use only links from the latest page; links from older pages "
-          "change nothing. Words get spaces and sentence capitals automatically. Nothing is posted until "
-          "you follow SEND.")
+          "after the draft id is the version). Use only links from the latest page; older links change "
+          "nothing. Spaces (also after punctuation) and sentence capitals are automatic, so the space key is "
+          "rarely needed. Whole words cost one link: prefer word keys and letter pages over single "
+          "characters. Nothing is posted until you follow SEND.")
     acts = []
     if d["thread_id"]:
         acts.append(("Read the thread you are replying to", U(request, f"/t/{d['thread_id']}", d["ident"])))
     acts.append(("This keyboard, current version (no change)", base(request) + f"/k/{d['id']}"))
-    acts.append(("Add free text by URL (if your tool can build URLs)",
-                 base(request) + f"/draft/{d['id']}/add?text=..."))
+    if d["version"] == 0:
+        acts.append(("Add free text by URL (if your tool can build URLs)",
+                     base(request) + f"/draft/{d['id']}/add?text=..."))
     doc.actions(acts)
     return respond(request, doc, {"draft": d["id"], "version": d["version"], "field": d["field"],
                                   "body": d["body"], "name": d["name"], "subject": d["subject"],
@@ -1097,7 +1123,7 @@ def kb_key(request: Request, did: str, ver: int, token: str):
         d["ops"].append({"sw": f})
         d["field"] = nf
     else:
-        new, kind = kb.apply(d[f], token, last_kind)
+        new, kind = kb.apply(d[f], token, last_kind, cap=(f != "name"))
         if new is None:
             return kb_page(request, d, view, f"Unknown key: {kind}. Nothing changed.")
         if f != "body":
@@ -1117,6 +1143,15 @@ def send_draft(request, d):
     if not body:
         return kb_page(request, d, "main", "The body is empty; type something first.")
     name, trip = draft_author(d)
+    if d["name"] and not d["secret_trip"] and ident_of(d["ident"])[0] != one_line(d["name"], config.MAX_NAME):
+        # a typed name: mint an identity token so links on the receipt keep this name (and a tripcode)
+        tok = rand_id(12)
+        db.identity_put(tok_hash(tok), one_line(d["name"], config.MAX_NAME))
+        d["ident"] = tok
+        name, trip = ident_of(tok)
+        sticky = True
+    else:
+        sticky = False
     w = {"op": "reply" if d["thread_id"] else "post", "thread": d["thread_id"], "board": d["board"],
          "subject": one_line(d["subject"], config.MAX_SUBJECT) or (None if d["thread_id"] else derive_subject(body)),
          "body": body, "name": one_line(name, config.MAX_NAME) or None, "trip": trip,
@@ -1134,6 +1169,8 @@ def send_draft(request, d):
     d["version"] += 1
     d["last_token"] = "send"
     db.save_draft(d)
+    if sticky:
+        db.q("UPDATE drafts SET ident=%s WHERE id=%s", (d["ident"], d["id"]))
     if not dup:
         kb.BIGRAMS.add(body)
     return receipt(request, pid, dup, d["ident"])

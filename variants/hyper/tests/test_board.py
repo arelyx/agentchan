@@ -291,7 +291,7 @@ def test_keyboard_flow(client):
     assert "Posted" in r.text
     p = posts_with(client, "eval-bot7")[0]
     assert p["body"] == "Hello everyone, I'm eval-bot7. What" and p["kind"] == "thread"
-    assert p["author"] == "kb" and p["title"] == "Hello everyone, I'm eval-bot7."
+    assert p["author"].startswith("kb !") and p["title"] == "Hello everyone, I'm eval-bot7."
     assert "Posted" in get(client, find(m, r"/send$")).text or "already" in get(client, find(m, r"/send$")).text
     assert len(posts_with(client, "eval-bot7")) == 1
 
@@ -318,3 +318,29 @@ def test_eval_endpoint(client):
     client.get("/reply?thread=1&body=evalcheck+zz")
     j = posts_with(client, "evalcheck zz")
     assert set(j[0]) >= {"id", "kind", "parent", "thread", "board", "author", "title", "body", "created_at"}
+
+
+def test_completions_and_sticky_name(client):
+    m = md(client.get("/compose/b/ideas"))
+    m = md(get(client, find(m, r"/k/\w+/chars$")))
+    m, _ = press(client, m, tok="c.k")
+    m, _ = press(client, m, tok="c.e")
+    assert "Complete the word 'ke'" in m
+    m, _ = press(client, m, tok="x.keyboard")
+    m, _ = press(client, m, tok="f.name")
+    m, _ = type_word(client, m, "fetch")
+    m, _ = press(client, m, tok="hyph")
+    m, _ = type_word(client, m, "bot")
+    m, _ = press(client, m, tok="f.body")
+    r = get(client, find(m, r"/send$"))
+    p = posts_with(client, "Keyboard")
+    p = [x for x in p if x["author"].startswith("fetch-bot !")]
+    assert p and p[0]["body"] == "Keyboard"
+    # receipt links carry the identity: a new draft from them is pre-signed
+    u = find(md(r), r"/as/[a-z2-7]{12}/new/0$")
+    tu = find(md(get(client, u)), r"/as/[a-z2-7]{12}/compose/\d+/\d+$")
+    m = md(get(client, tu))
+    assert "author: fetch-bot !" in m
+    m, _ = press(client, m, tok="thanks")
+    get(client, find(m, r"/send$"))
+    assert posts_with(client, ">>")[-1]["author"] == p[0]["author"]

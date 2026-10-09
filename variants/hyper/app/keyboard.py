@@ -25,9 +25,9 @@ PUNCT = {  # slug: (text, label, space_before)
     "hash": ("#", "#", True), "plus": ("+", "+", True), "eq": ("=", "=", True),
     "sp": (" ", "space", False), "nl": ("\n", "new line", False),
 }
-MAIN_PUNCT = ["period", "comma", "qmark", "excl", "amp", "hyph", "apos", "colon", "nl", "sp"]
+MAIN_PUNCT = ["period", "comma", "qmark", "excl", "amp", "hyph", "apos", "colon", "nl"]
 GLUE_AFTER = set("-/(@#\"'\n ") | {">"}  # no auto space after these
-SENT_END = re.compile(r"(^|[.!?]\s*|\n\s*)$")
+SENT_END = re.compile(r"(^|[.!?]\s*|\n\s*|^>>\d+\s*)$")
 
 EMOJI = {"smile": "🙂", "grin": "😄", "wave": "👋", "thumbsup": "👍", "heart": "❤️", "robot": "🤖",
          "party": "🎉", "think": "🤔", "eyes": "👀", "fire": "🔥", "check": "✅", "star": "⭐"}
@@ -183,8 +183,34 @@ def fix_i(w):
     return w
 
 
-def apply(text: str, token: str, last_kind: str):
-    """Return (new_text, kind) or (None, error) for a typing token."""
+def partial_word(text, last_kind):
+    """The letters typed one by one at the end of the text (for completions), or ''."""
+    if last_kind != "char":
+        return ""
+    m = re.search(r"[a-z0-9']+$", text.lower())
+    return m.group(0) if m else ""
+
+
+def completions(partial, n=12):
+    if not partial:
+        return []
+    with BIGRAMS.lock:
+        obs = [w for w, _ in BIGRAMS.uni.most_common(3000) if w.startswith(partial) and w != partial]
+    out = []
+    for w in obs + [w for w in WORDS if w.startswith(partial) and w != partial]:
+        if w not in out:
+            out.append(w)
+    return out[:n]
+
+
+def apply(text: str, token: str, last_kind: str, cap: bool = True):
+    """Return (new_text, kind) or (None, error) for a typing token. cap: sentence capitals."""
+    if token.startswith("x."):
+        part = partial_word(text, last_kind)
+        w = word_from_slug(token[2:])
+        if not part or not w or not w.lower().startswith(part):
+            return None, "completion does not match the letters typed"
+        return text + w[len(part):], "word"
     if token in PUNCT:
         t, _, sp = PUNCT[token]
         if token == "quote":
@@ -192,13 +218,14 @@ def apply(text: str, token: str, last_kind: str):
         return _join(text, t, sp, capitalize=False), "punct"
     if token.startswith("c.") and re.fullmatch(r"c\.[a-z0-9]", token):
         ch = token[2:]
-        return _join(text, ch, space_before=(last_kind != "char"), capitalize=False), "char"
+        return _join(text, ch, space_before=(last_kind != "char"),
+                     capitalize=cap and last_kind != "char"), "char"
     if token.startswith("C.") and re.fullmatch(r"C\.[a-z]", token):
         ch = token[2:].upper()
         return _join(text, ch, space_before=(last_kind != "char"), capitalize=False), "char"
     if token.startswith("e."):
         e = EMOJI.get(token[2:])
-        return (_join(text, e), "word") if e else (None, f"unknown emoji {token}")
+        return (_join(text, e, capitalize=False), "word") if e else (None, f"unknown emoji {token}")
     if token.startswith("q."):
         if not token[2:].isdigit():
             return None, "bad quote token"
@@ -208,8 +235,8 @@ def apply(text: str, token: str, last_kind: str):
         if not ph:
             return None, f"unknown phrase {token}"
         ph = " ".join(fix_i(w) for w in ph.split(" "))
-        return _join(text, ph), "word"
+        return _join(text, ph, capitalize=cap), "word"
     w = word_from_slug(token)
     if w is None:
         return None, f"unknown key {token!r}"
-    return _join(text, fix_i(w)), "word"
+    return _join(text, fix_i(w), capitalize=cap), "word"
