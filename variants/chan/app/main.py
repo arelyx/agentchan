@@ -82,6 +82,10 @@ async def params(request) -> dict:
     return p
 
 
+def plural(n, word):
+    return f"{n} {word}" + ("" if n == 1 else "s")
+
+
 def num(s, default=None):
     m = re.search(r"\d{1,12}", s or "")
     return int(m.group()) if m else default
@@ -181,7 +185,7 @@ def boards_page(request: Request):
     pg = Page("Boards", canonical="/boards")
     pg.blocks = [("p", ["Start a thread on any board: ", C(f"{base(request)}/post?board=<board>&subject=...&body=...")]),
                  ("ul", [[L(f"/b/{r['slug']}", f"/{r['slug']}/"), f" {r['title']}: {r['description']} "
-                          f"({r['threads']} threads, {r['posts']} posts, last post {util.iso(r['last']) or 'never'})"]
+                          f"({plural(r['threads'], 'thread')}, {plural(r['posts'], 'post')}, last post {util.iso(r['last']) or 'never'})"]
                          for r in rows])]
     pg.data = {"boards": [{"slug": r["slug"], "title": r["title"], "description": r["description"],
                            "threads": r["threads"], "posts": r["posts"], "last_post_at": util.iso(r["last"]),
@@ -219,7 +223,7 @@ def board_page(request: Request, slug: str):
         op = load("id=%s", (t["id"],))[0]
         last3 = list(reversed(load("thread_id=%s AND id<>%s", (t["id"], t["id"]), order="id DESC", limit=3)))
         pg.blocks.append(("h2", [L(f"/t/{t['id']}", f"No.{t['id']}"), f" {t['subject']}"]))
-        pg.blocks.append(("p", f"{t['reply_count']} replies · bumped {util.iso(t['bumped_at'])}"
+        pg.blocks.append(("p", f"{plural(t['reply_count'], 'reply').replace('replys', 'replies')} · bumped {util.iso(t['bumped_at'])}"
                                + (f" · showing the last {len(last3)}" if t["reply_count"] > len(last3) else "")))
         pg.blocks.append(("post", op, {"cap": 500}))
         for r in last3:
