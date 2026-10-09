@@ -81,6 +81,9 @@ def run_one(target, profile, model, task, outdir):
         cmd += ["--tools", "", "--mcp-config", str(d / "mcp.json"), "--strict-mcp-config",
                 "--allowedTools", "mcp__web__fetch"]
     t0 = time.time()
+    if profile in NATIVE:
+        calls, errs, final = run_native(profile, model, prompt, d)
+        return finish(target, profile, model, task, n, t0, None, calls, errs, final, d)
     if model == "qwen":  # local OpenAI-compatible model via eval/oss_agent.py (no curl profile)
         (d / "prompt.txt").write_text(prompt)
         prof = PROFILES[profile] or "raw"
@@ -111,6 +114,64 @@ def run_one(target, profile, model, task, outdir):
                     tool_errors += 1
     return finish(target, profile, model, task, n, t0, result, tool_calls, tool_errors,
                   result.get("result") or "", d)
+
+
+CODEX = os.environ.get("CODEX_BIN", "/usr/lib/chatgpt/resources/codex")
+# Real harnesses with their own native tools (target must be public https for WebFetch).
+NATIVE = {
+    "webfetch": ["claude", "-p", "{prompt}", "--model", "{model}", "--output-format", "stream-json",
+                 "--verbose", "--no-session-persistence", "--max-budget-usd", "1.50", "--tools", "WebFetch",
+                 "--allowedTools", "WebFetch", "--strict-mcp-config"],
+    "claude-native": ["claude", "-p", "{prompt}", "--model", "{model}", "--output-format", "stream-json",
+                      "--verbose", "--no-session-persistence", "--max-budget-usd", "1.50", "--tools",
+                      "WebFetch,WebSearch,Bash", "--allowedTools", "WebFetch", "WebSearch", "Bash(curl:*)",
+                      "--strict-mcp-config"],
+    "codex-net": [CODEX, "exec", "--skip-git-repo-check", "--ephemeral", "--json", "-s", "workspace-write",
+                  "-c", "sandbox_workspace_write.network_access=true", "{prompt}"],
+    "codex-search": [CODEX, "exec", "--skip-git-repo-check", "--ephemeral", "--json", "-s", "read-only",
+                     "{prompt}"],
+    "opencode": ["opencode", "run", "--format", "json", "--auto", "{prompt}"],
+}
+
+
+def run_native(profile, model, prompt, d):
+    cmd = [c.replace("{prompt}", prompt).replace("{model}", model) for c in NATIVE[profile]]
+    try:
+        p = subprocess.run(cmd, capture_output=True, text=True, timeout=1800, cwd=d,
+                           stdin=subprocess.DEVNULL)
+        out, err = p.stdout, p.stderr
+    except subprocess.TimeoutExpired as ex:
+        out, err = (ex.stdout or b"").decode() if isinstance(ex.stdout, bytes) else (ex.stdout or ""), "timeout"
+    (d / "transcript.jsonl").write_text(out)
+    (d / "stderr.txt").write_text(err)
+    calls = errs = 0
+    final = ""
+    for line in out.splitlines():
+        try:
+            e = json.loads(line)
+        except Exception:  # noqa: BLE001
+            continue
+        t = e.get("type")
+        if t == "assistant":  # claude
+            calls += sum(1 for c in e["message"].get("content", []) if c.get("type") == "tool_use")
+        elif t == "user":
+            errs += sum(1 for c in e["message"].get("content", [])
+                        if isinstance(c, dict) and c.get("type") == "tool_result" and c.get("is_error"))
+        elif t == "result":
+            final = e.get("result") or final
+        elif t == "item.completed":  # codex
+            it = e.get("item", {})
+            if it.get("type") in ("command_execution", "web_search", "mcp_tool_call"):
+                calls += 1
+                errs += bool(it.get("exit_code"))
+            elif it.get("type") == "agent_message":
+                final = it.get("text", "")
+        elif t == "tool_use":  # opencode
+            calls += 1
+            errs += (e.get("part", {}).get("state", {}).get("status") == "error")
+        elif t == "text":
+            final = e.get("part", {}).get("text", final)
+    return calls, errs, final
 
 
 def finish(target, profile, model, task, n, t0, result, tool_calls, tool_errors, final, d):
