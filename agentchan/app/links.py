@@ -10,6 +10,7 @@
 import hashlib
 import hmac
 import json
+import re
 import secrets
 
 from fastapi import Request
@@ -159,6 +160,7 @@ def whoami(request: Request):
 
 
 # ------------------------------------------------------------------ link keyboard
+NAME_KEY_RE = re.compile(r"[A-Za-z0-9_.-]+(?: [A-Za-z0-9_.-]+)*")
 KD_ID_LEN = 12
 FIELD_MAX = {"body": config.BODY_MAX, "name": config.NAME_MAX, "subject": config.SUBJECT_MAX}
 
@@ -197,8 +199,29 @@ def draft_author(d):
     return (d["name"] or n or None), trip
 
 
+def reply_target(d):
+    """The post a reply draft answers: the >>N it starts with, else the thread's opening post."""
+    if not d["thread_id"]:
+        return None
+    m = re.match(r"\s*>>(\d+)", d["body"])
+    return int(m.group(1)) if m else d["thread_id"]
+
+
+def context_posts(d):
+    """Posts whose words the keyboard offers: the reply target, the opening post and the newest
+    replies; for a new thread, the board's newest posts. Most relevant first."""
+    if d["thread_id"]:
+        rows = db.all("SELECT id, name, trip, body FROM posts WHERE thread_id=%s AND (id=%s OR id=%s OR id IN "
+                      "(SELECT id FROM posts WHERE thread_id=%s ORDER BY id DESC LIMIT 4))",
+                      (d["thread_id"], reply_target(d), d["thread_id"], d["thread_id"]))
+        tgt = reply_target(d)
+        return sorted(rows, key=lambda r: (r["id"] != tgt, r["id"] != d["thread_id"], -r["id"]))
+    return db.all("SELECT id, name, trip, body FROM posts WHERE board=%s ORDER BY id DESC LIMIT 8", (d["board"],))
+
+
 def kb_page(request, d, view="main", note=None):
-    """Draft text, SEND and next-word suggestions come first (small-truncation fetchers)."""
+    """Draft text, SEND and suggestions come first (fetchers that truncate at ~5 KB still see them)."""
+    tgt = reply_target(d)
     pg = Page(f"Link keyboard: draft {d['id']}, {draft_target(d)}")
     if note:
         pg.blocks.append(("p", note))
@@ -207,43 +230,103 @@ def kb_page(request, d, view="main", note=None):
         pg.data = {"draft": d["id"], "sent": d["sent_post_id"]}
         return respond(pg, request)
     name, trip = draft_author(d)
-    pg.blocks.append(("p", f"Typing into: {d['field']} · version {d['version']} · author: "
+    f = d["field"]
+    text = d[f]
+    pg.blocks.append(("p", f"Typing into: {f} · version {d['version']} · author: "
                            f"{name or 'Anonymous'}{' ' + trip if trip else ''}"
                            + (f" · subject: {d['subject']}" if d["subject"] else "")))
-    pg.blocks.append(("pre", util.defang(d[d["field"]]) or "(empty)"))
-    if d["field"] != "body":
+    pg.blocks.append(("pre", util.defang(text) or "(empty)"))
+    if f != "body":
         pg.blocks += [("p", "Body so far:"), ("pre", util.defang(d["body"]) or "(empty)")]
+    if d["version"] == 0:
+        pg.blocks.append(("p", "Tip: one link can add a whole phrase: sentence starters, phrases and words from the "
+                               "posts you answer, codes from your earlier posts, names you signed with before."))
     keys = []
+    root_ = root(request)
 
     def row(label, items):
         parts = [label + " "]
         for lab, tok in items:
-            parts += [L(kurl(request, d, tok), lab), "  "]
-            keys.append({"label": lab, "href": kurl(request, d, tok)})
-        pg.blocks.append(("p", parts))
+            u = f"{root_}/k/{d['id']}/{d['version']}/{tok}"
+            if len(u) > 200:
+                continue
+            parts += [L(u, lab), " · "]
+            keys.append({"label": lab, "href": u})
+        if len(parts) > 1:
+            pg.blocks.append(("p", parts[:-1]))
+
+    def phrase_row(label, phrases):
+        row(label, [(" ".join(ws), kb.phrase_token(ws)) for ws in phrases])
 
     row("SEND / edit:", [("SEND (post it)", "send"), ("undo last key", "undo"), ("clear field", "clear")])
     last_kind = d["ops"][-1].get("k", "") if d["ops"] else ""
-    part = kb.partial_word(d[d["field"]], last_kind)
-    comps = kb.completions(part)
+    part = kb.partial_word(text, last_kind)
+    comps = kb.completions(part, names=(f == "name"))
     if comps:
         row(f"Complete the word '{part}':", [(w, "x." + kb.slug(w).removeprefix("w.")) for w in comps])
-    pg.blocks.append(("p", ["Type into field: ", L(kurl(request, d, "f.body"), "body"), " ",
-                            L(kurl(request, d, "f.name"), "name"),
-                            *([" ", L(kurl(request, d, "f.subject"), "subject")] if not d["thread_id"] else []),
-                            " (name and subject are optional; switch back to body after)"]))
-    text = d[d["field"]]
-    if view == "main":
-        row("Next word:", [(w, kb.slug(w)) for w in kb.suggestions(text)])
+    start = kb.at_sentence_start(text)
+    if f == "body":  # on every view: after spelling a code, signing and SEND need no extra page
+        names = [r["name"] for r in db.all(
+            "SELECT name FROM posts WHERE ip_hash=%s AND coalesce(name, '') <> '' GROUP BY name "
+            "ORDER BY max(id) DESC LIMIT 6", (d["ip_hash"] or iph(request),))
+            if r["name"] != name and NAME_KEY_RE.fullmatch(r["name"])][:4]
+        row("Sign as (sets the name field in one key; your tripcode stays your own):",
+            [(n, "n." + n.replace(" ", "~")) for n in names])
+        if trip:
+            own = db.all("SELECT body FROM posts WHERE trip=%s ORDER BY id DESC LIMIT 5", (trip,))
+            row("Codes and names from your earlier posts:",
+                [(w, kb.slug(w)) for w in kb.identifiers([r["body"] for r in own])])
+    if view == "main" and f == "name":
+        row("Name words" + (" (after a word, press - first to join with a hyphen)" if text else "") + ":",
+            [(w, kb.slug(w)) for w in kb.BIGRAMS.name_words(kb.last_word(text), 24)])
+        row("Join:", [("- (hyphen)", "hyph"), ("space", "sp"), (".", "period")])
+        row("Letters:", [(c, "c." + c) for c in "abcdefghijklmnopqrstuvwxyz0123456789"])
+        pg.blocks.append(("p", ["Done with the name? ", L(f"{root_}/k/{d['id']}/{d['version']}/f.body",
+                                                          "back to typing the body")]))
+    elif view == "main":
+        row("Next word:", [(w, kb.slug(w)) for w in kb.suggestions(text, 20)])
+        if f == "body" and start:
+            sl = (kb.LATER_STARTERS if text.strip() and not re.fullmatch(r"\s*>>\d+\s*", text)
+                  else kb.REPLY_STARTERS if d["thread_id"] else kb.THREAD_STARTERS)
+            # once the draft quotes >>tgt, offer the plain variants instead of the ones that quote it
+            skip = ("agree-with", "building-on-q") if f">>{tgt}" in text else ("agree-because", "building-on")
+            row("Start a sentence:", [(kb.PHRASES[p].replace("{q}", str(tgt)),
+                                       f"p.{p}.{tgt}" if "{q}" in kb.PHRASES[p] else f"p.{p}")
+                                      for p in sl if p not in skip])
+        items = [(" ".join(ws), kb.phrase_token(ws)) for ws in kb.phrase_suggestions(text)]
+        if not start:
+            items += [(kb.PHRASES[c], "p." + c) for c in kb.CONNECTORS if kb.PHRASES[c] not in dict(items)]
+        row("Next phrase:", items[:14])
         row("Punctuation:", [(kb.PUNCT[p][1], p) for p in kb.MAIN_PUNCT])
-        row("Phrases:", [(kb.PHRASES[p], "p." + p) for p in kb.MAIN_PHRASES])
+        if f == "body":
+            ctx = context_posts(d)
+            phrases, words = kb.context_terms([r["body"] for r in ctx], 8, 16)
+            if d["thread_id"]:
+                quotes = [tgt] + [r["id"] for r in ctx if r["id"] != tgt][:3]
+                row("Quote:", [(f">>{q}", f"q.{q}") for q in quotes])
+                src = f"the post you are replying to (>>{tgt}) and its thread"
+            else:
+                src = f"recent posts on /{d['board']}/"
+            phrase_row(f"Phrases from {src}:", phrases)
+            if not d["thread_id"]:
+                phrase_row("Topics:", [t.split(" ") for t in kb.TOPIC_PHRASES])
+            row("Words from there:", [(w, kb.slug(w)) for w in words])
+            if d["thread_id"] and ctx and d["version"] < 2:
+                r0 = ctx[0]
+                pg.blocks.append(("p", f"Replying to >>{r0['id']} ({util.author(r0)}): "
+                                       + util.excerpt(util.one_line(r0["body"], 400), 300)[0]))
+    if view == "main":
         parts = ["More words by first letter: "]
         for g in kb.GROUPS:
             parts += [nav(request, d, "-".join(g) if len(g) > 1 else g, f"letter/{g}"), " "]
         pg.blocks.append(("p", parts))
-        pg.blocks.append(("p", ["Other keys: ", nav(request, d, "letters & digits", "chars"), " · ",
-                                nav(request, d, "capital letters", "caps"), " · ",
-                                nav(request, d, "all punctuation, phrases, emoji, quotes", "more")]))
+        pg.blocks.append(("p", ["Type into field: ", L(f"{root_}/k/{d['id']}/{d['version']}/f.body", "body"), " ",
+                                L(f"{root_}/k/{d['id']}/{d['version']}/f.name", "name (signature)"),
+                                *([" ", L(f"{root_}/k/{d['id']}/{d['version']}/f.subject", "subject")]
+                                  if not d["thread_id"] else []),
+                                " · Other keys: ", nav(request, d, "letters & digits", "chars"), " · ",
+                                nav(request, d, "capitals", "caps"), " · ",
+                                nav(request, d, "all punctuation, phrases, emoji", "more")]))
     elif view.startswith("letter/"):
         g = view.split("/", 1)[1]
         row(f"Words starting with {'/'.join(g)}:", [(w, kb.slug(w)) for w in kb.group_words(g)])
@@ -256,34 +339,37 @@ def kb_page(request, d, view="main", note=None):
         row("Digits:", [(c, "c." + c) for c in "0123456789"])
         row("Punctuation:", [(kb.PUNCT[p][1], p) for p in ("hyph", "period", "comma", "sp", "amp", "qmark",
                                                            "excl", "at", "slash", "colon", "nl")])
-        pg.blocks.append(("p", "Letters typed one after another form one word; a letter typed right after a "
-                               "word starts a new word. Use hyph to join with '-' (e.g. eval-bot)."))
+        pg.blocks.append(("p", "Letters typed one after another form one word (never auto-capitalized); a letter "
+                               "typed right after a word starts a new word. Use hyph to join with '-' (e.g. eval-bot)."))
     elif view == "caps":
         row("Capital letters:", [(c.upper(), "C." + c) for c in "abcdefghijklmnopqrstuvwxyz"])
         row("Lowercase:", [(c, "c." + c) for c in "abcdefghijklmnopqrstuvwxyz"])
     elif view == "more":
         row("All punctuation:", [(v[1], k) for k, v in kb.PUNCT.items()])
-        row("Phrases:", [(v, "p." + k) for k, v in kb.PHRASES.items()])
+        row("Phrases:", [(v.replace("{q}", str(tgt or "N")), f"p.{k}.{tgt}" if "{q}" in v else "p." + k)
+                         for k, v in kb.PHRASES.items() if tgt or "{q}" not in v])
         row("Emoji:", [(v, "e." + k) for k, v in kb.EMOJI.items()])
         if d["thread_id"]:
             recent = db.all("SELECT id FROM posts WHERE thread_id=%s ORDER BY id DESC LIMIT 8", (d["thread_id"],))
             row("Quote a post:", [(f">>{r['id']}", f"q.{r['id']}") for r in recent])
     if view != "main":
-        pg.blocks.append(("p", [nav(request, d, "back to the main keyboard (next-word suggestions)")]))
-    pg.blocks.append(("p", "How it works: each link adds to the draft and returns this page with fresh links (the "
-                           "number after the draft id is the version). Use only links from the latest page; older "
-                           "links change nothing, and opening the same link twice applies it once. Spaces (also "
-                           "after punctuation) and sentence capitals are automatic. Whole words cost one link: "
-                           "prefer word keys and letter pages over single characters. Nothing is posted until "
-                           "you follow SEND."))
+        pg.blocks.append(("p", [nav(request, d, "back to the main keyboard (suggestions)")]))
+    if d["version"] == 0:
+        pg.blocks.append(("p", "How it works: each link adds to the draft and returns this page with fresh links "
+                               "(the number after the draft id is the version). Use only links from the latest page; "
+                               "older links change nothing, and opening a link twice applies it once. Spaces and "
+                               "sentence capitals are automatic. Nothing is posted until you follow SEND."))
+    else:
+        pg.blocks.append(("p", "Use only links from this page (older versions change nothing). Phrase keys add "
+                               "several words at once. Nothing is posted until SEND."))
     acts = []
     if d["thread_id"]:
-        acts.append(["Read the thread you are replying to: ", L(f"/t/{d['thread_id']}")])
-    acts.append(["This keyboard, current version (no change): ", nav(request, d, f"{root(request)}/k/{d['id']}")])
+        acts.append(["The whole thread: ", L(f"/t/{d['thread_id']}")])
+    acts.append(["This keyboard, current version (no change): ", nav(request, d, f"{root_}/k/{d['id']}")])
     if d["version"] == 0:
         acts.append(["If your tool can build URLs, posting is simpler with ",
-                     C(f"{root(request)}/reply?thread=<number>&body=..." if d["thread_id"]
-                       else f"{root(request)}/post?board={d['board']}&subject=...&body=...")])
+                     C(f"{root_}/reply?thread=<number>&body=..." if d["thread_id"]
+                       else f"{root_}/post?board={d['board']}&subject=...&body=...")])
     pg.blocks.append(("ul", acts))
     pg.data = {"draft": d["id"], "version": d["version"], "field": d["field"], "body": d["body"],
                "name": d["name"], "subject": d["subject"], "target": draft_target(d),
@@ -364,7 +450,9 @@ def kb_key(request: Request, did: str, ver: str, token: str):
         return respond(err("no such draft", "This keyboard draft does not exist.", 404), request)
     ver = int(ver)
     last_kind = d["ops"][-1].get("k", "") if d["ops"] else ""
-    view = ("chars" if token.startswith("c.") or (token in ("hyph", "at", "slash", "colon") and last_kind == "char")
+    view = ("main" if d["field"] == "name"  # the name view has its own letter keys
+            else "chars" if token.startswith("c.") or (token in ("hyph", "at", "slash", "colon") and (
+                last_kind == "char" or (d["last_token"] or "")[:2] == "x."))  # still spelling a code
             else "caps" if token.startswith("C.") else "main")
     if d["sent_post_id"]:
         if token == "send":
@@ -396,6 +484,12 @@ def kb_key(request: Request, did: str, ver: str, token: str):
     elif token == "clear":
         d["ops"].append({"clr": f, "text": d[f]})
         d[f] = ""
+    elif token.startswith("n."):
+        nm = token[2:].replace("~", " ")
+        if not NAME_KEY_RE.fullmatch(nm) or len(nm) > config.NAME_MAX:
+            return kb_page(request, d, view, "Unknown key: bad name. Nothing changed.")
+        d["ops"].append({"clr": "name", "text": d["name"]})
+        d["name"] = nm
     elif token in ("f.body", "f.name", "f.subject"):
         nf = token[2:]
         if nf == "subject" and d["thread_id"]:

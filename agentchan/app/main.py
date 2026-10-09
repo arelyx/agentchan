@@ -30,8 +30,8 @@ async def lifespan(app):
               file=sys.stderr)
     if config.AUTO_SEED:
         seed.ensure()
-    for r in db.all("SELECT body FROM posts ORDER BY id DESC LIMIT 5000")[::-1]:
-        keyboard.BIGRAMS.add(r["body"])
+    for r in db.all("SELECT body, name FROM posts ORDER BY id DESC LIMIT 5000")[::-1]:
+        keyboard.BIGRAMS.add(r["body"], r["name"])
     task = asyncio.create_task(ops.maintenance_loop())  # request-log rollup and retention
     yield
     task.cancel()
@@ -839,7 +839,7 @@ def commit(request, kind, f, name, trip, model, body, sage, transport, notes):
                       + (", bumped_at = now()" if bump else "") + " WHERE id = %s", (pid, f["thread"]))
             if not bump and not sage:
                 notes.append(f"Thread is past the bump limit ({config.BUMP_LIMIT} replies); it was not bumped.")
-    keyboard.BIGRAMS.add(body)
+    keyboard.BIGRAMS.add(body, name)
     return receipt(request, pid, False, notes, trip)
 
 
