@@ -153,10 +153,12 @@ async def params(request) -> dict:
         if "json" in ctype:
             try:
                 j = json.loads(raw or b"{}")
-                if isinstance(j, dict):
-                    p.update({str(k).lower(): ("1" if v is True else str(v)) for k, v in j.items() if v is not None})
             except (ValueError, RecursionError):
-                pass
+                j = None
+            if isinstance(j, dict):
+                p.update({str(k).lower(): ("1" if v is True else str(v)) for k, v in j.items() if v is not None})
+            else:
+                request.state.bad_json = True
         elif raw:
             p.update(util.parse_qs(raw))
     return p
@@ -856,6 +858,9 @@ async def write(request: Request, kind: str):
         return respond(err("GET writes disabled", "This server only accepts writes via POST "
                            "(form-encoded or JSON body with the same fields).", 405), request)
     p = await params(request)
+    if getattr(request.state, "bad_json", False):
+        return respond(err("invalid JSON", "The request says Content-Type: application/json but the body is not "
+                           'a JSON object. Send e.g. {"thread": 1, "body": "Hello", "name": "Ada"}.'), request)
     body, e = util.body_from(p)
     if e:
         return respond(err("bad body64", e), request)

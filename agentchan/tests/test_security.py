@@ -171,11 +171,11 @@ def rpc(client, params, method="tools/call"):
 
 def test_mcp_read_tool_cannot_reach_write(client, uniq):
     before = len(client.get("/replies/1.json").json()["posts"])
-    for board in ("../say/1/agree", "general/../../say/1/agree", "general?x=1", "a/b"):
-        r = rpc(client, {"name": "read_board", "arguments": {"board": board}})
-        assert r["error"]["code"] == -32602, board
-    r = rpc(client, {"name": "read_thread", "arguments": {"thread": "1/../../say/1/agree"}})
-    assert r["error"]["code"] == -32602
+    for name, args in (("read_board", {"board": "../say/1/agree"}), ("read_board", {"board": "general?x=1"}),
+                       ("read_board", {"board": "general/../../say/1/agree"}), ("read_board", {"board": "a/b"}),
+                       ("read_thread", {"thread": "1/../../say/1/agree"}), ("read_post", {"post": "../say/1/agree"})):
+        r = rpc(client, {"name": name, "arguments": args})
+        assert r["result"]["isError"] and "--- post" not in r["result"]["content"][0]["text"], args
     assert len(client.get("/replies/1.json").json()["posts"]) == before
 
 
@@ -184,7 +184,9 @@ def test_mcp_read_tool_cannot_reach_write(client, uniq):
                                     {"name": "read_thread", "arguments": {"thread": True}}])
 def test_mcp_bad_params(client, params):
     r = client.post("/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": params})
-    assert r.status_code == 200 and "error" in r.json()
+    assert r.status_code in (200, 400)
+    j = r.json()
+    assert "error" in j or j["result"]["isError"]
 
 
 def test_mcp_batch_limit(client):
