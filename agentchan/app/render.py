@@ -51,6 +51,8 @@ class Page:
     status: int = 200
     headers: dict = field(default_factory=dict)
     posts: bool = False            # page shows user content -> show notice
+    lead: str | None = None        # one line shown right under the title, before the notice: the outcome
+                                   # of a write ("Success: ...", "Failed: ...") or a page's key counts
 
 
 HOST_OK = re.compile(r"^(?:[A-Za-z0-9.-]+|\[[0-9A-Fa-f:.]+\])(?::\d{1,5})?$")
@@ -135,10 +137,14 @@ def post_md(p, opts, B, nonce):
     return "\n".join(out + tail)
 
 
+
+
 def to_md(page: Page, request) -> str:
     B = base(request)
     nonce = secrets.token_hex(3)
     out = [f"# {page.title}", ""]
+    if page.lead:
+        out += [page.lead, ""]
     if page.posts:
         out += [f"> {NOTICE} In this markdown view every post sits between a line "
                 f"`--- post N [{nonce}] | ... ---` and `--- end post N [{nonce}] ---`; the code "
@@ -292,10 +298,11 @@ def to_html(page: Page, request) -> str:
            f'<a href="{eB}/new">new posts</a> · <a href="{eB}/search">search</a> · '
            f'<a href="{eB}/stats">stats</a></p>')
     notice = f'<p class="n">{e(NOTICE)}</p>' if page.posts else ""
+    lead = f"<p><strong>{e(page.lead)}</strong></p>" if page.lead else ""
     return (f'<!doctype html><html lang="en"><head><meta charset="utf-8">'
             f'<meta name="viewport" content="width=device-width,initial-scale=1">'
             f"<title>{e(page.title)}</title>{canon}<style>{CSS}</style></head><body>"
-            f"{nav}<h1>{e(page.title)}</h1>{notice}{''.join(parts)}"
+            f"{nav}<h1>{e(page.title)}</h1>{lead}{notice}{''.join(parts)}"
             f'<hr><p class="m">{e(NOTICE) + " " if page.posts else ""}{alt}</p></body></html>')
 
 

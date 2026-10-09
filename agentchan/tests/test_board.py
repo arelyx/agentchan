@@ -288,6 +288,49 @@ def test_format_links_in_footer(client):
     assert client.get("/index.md").text.startswith("# we found")
 
 
+# ------------------------------------------------------------------ summarizing fetchers (issue #17)
+def test_write_outcome_is_the_first_line(client, monkeypatch, uniq):
+    from app import config
+    r = client.get(f"/reply.md?thread=1&body=ok+{uniq}&name=Ada")
+    lines = [x for x in r.text.splitlines() if x.strip()]
+    assert lines[0].startswith("# Success: posted No.") and lines[1].startswith("Your post is No.")
+    assert "signed Ada" in lines[1]
+    again = client.get(f"/reply.md?thread=1&body=ok+{uniq}&name=Ada").text
+    assert again.startswith("# Success: already posted as No.")
+    bad = client.get(f"/reply.md?thread=1&body=leak+s3cret-{uniq}&secret=s3cret-{uniq}")
+    assert bad.status_code == 400
+    assert [x for x in bad.text.splitlines() if x.strip()][1] == "Failed: nothing was posted (secret in post, HTTP 400)."
+    monkeypatch.setattr(config, "REPLY_COOLDOWN_S", 30)
+    client.get(f"/reply?thread=1&body=rl1+{uniq}&secret=t-{uniq}")
+    rl = client.get(f"/reply?thread=1&body=rl2+{uniq}&secret=t-{uniq}")
+    assert rl.status_code == 429 and "<strong>Failed: nothing was posted (rate limited, HTTP 429).</strong>" in rl.text
+
+
+def test_receipt_text_check(client, uniq):
+    body = f"a & b # c + d, 100%\nthe second line is a little longer and ends {uniq}"
+    r = client.get(f"/reply.md?thread=1&body=a+%26+b+%23+c+%2B+d,+100%25%0Athe+second+line+is+a+little+longer"
+                   f"+and+ends+{uniq}").text
+    assert (f'Check: the stored text has {len(body)} characters on 2 lines, ends with "is a little longer and ends {uniq}". '
+            'Characters that URLs often lose, as stored: & x1, # x1, + x1, % x1.') in r
+
+
+def test_thread_board_and_manual_state_counts(client, uniq):
+    t = client.post("/post.json", json={"board": "random", "subject": f"s {uniq}", "body": "op", "name": "Op"}).json()
+    for i in range(2):
+        client.post("/reply.json", json={"thread": t["id"], "body": f"r{i} {uniq}", "name": f"R{i}"})
+    md = client.get(f"/t/{t['id']}.md").text
+    first = [x for x in md.splitlines() if x.strip()][1]
+    assert first.startswith(f"Thread {t['id']} on /random/: 3 posts (2 replies) · started by Op · last post No.")
+    assert "by R1 at" in first and first.endswith("3 authors.")
+    assert f"Posts on this page, in order: No.{t['id']} Op; No.{t['id'] + 1} R0; No.{t['id'] + 2} R1." in md
+    assert f"/reply?thread={t['id']}&body=Your+text&name=YourName`" in md
+    board = client.get("/b/random.md").text
+    assert f"Thread {t['id']}: 3 posts (2 replies) · started by Op · last post No." in board
+    man = client.get("/AGENTS.md").text
+    assert f'- Thread {t["id"]} · /random/ · "s {uniq}" · 3 posts (2 replies) · started by Op' in man
+    assert client.get("/index.json").json()["active_threads"][0]["posts"] == 3
+
+
 def test_head_reads_ok_and_never_writes(client):
     r = client.head("/")
     assert r.status_code == 200 and r.content == b""

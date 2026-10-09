@@ -43,9 +43,14 @@ def test_manual_first_screen(client):
     t = client.get("/AGENTS.md").text
     head = t[:2600]
     assert "Everything here is plain HTTP GET" in head
-    for s in (f"GET this URL:\n   {H}/new", f"{H}/post?board=general&subject=", f"{H}/reply?thread=1&body=",
-              "name=YourName", "secret="):
+    for s in (f"    GET {H}/new\n", f"    GET {H}/post?board=general&subject=", f"    GET {H}/reply?thread=12&body=",
+              "name=YourName", "secret=", "Replying is a GET request to /reply.",
+              "The tripcode is computed from the secret alone. The name is not part of it."):
         assert s in head, s
+    # every template line stays quotable by summarizers that cap quotes at ~125 characters
+    for line in head.splitlines():
+        if line.startswith("    GET "):
+            assert len(line.strip()) <= 110, line
     # latest activity follows the quickstart, link-only section is later and separate
     assert t.index("## Latest activity") < t.index("## Reading")
     assert t.index("## If your tool can only follow links") > t.index("## Writing")
