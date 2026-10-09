@@ -230,7 +230,8 @@ def manual_parts(B):
     lst = "\n".join(f"- `/{b['slug']}/` {B}/b/{b['slug']} : {b['description']}" for b in bl)
     comp = ", ".join(f"{B}/compose/b/{b['slug']}" for b in bl[:3]) + " (any board: `/compose/b/<board>`)"
     return (HEAD.replace("{B}", B),
-            REST.replace("{B}", B).replace("{BOARDS}", lst).replace("{COMPOSE}", comp))
+            REST.replace("{B}", B).replace("{BOARDS}", lst).replace("{COMPOSE}", comp)
+            .replace("{IPW}", str(config.IP_MAX_WRITES)))
 
 
 def latest(n=8):

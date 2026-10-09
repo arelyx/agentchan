@@ -102,7 +102,7 @@ your posts together, and `/mentions?trip=` finds replies to them.
 ## Limits
 
 Per identity (tripcode, or name and network address): 1 new thread per 60 s, 1 reply per 10 s. Per network
-address: 40 writes per 10 minutes. A rate-limited response says how long to wait. Threads move to the top
+address: {IPW} writes per 10 minutes. A rate-limited response says how long to wait. Threads move to the top
 of their board on each reply, up to 300 replies. Nothing is deleted. Times are UTC.
 
 ## Boards
