@@ -201,7 +201,7 @@ def test_link_write_urls_in_bodies_inert(client, uniq):
     assert f'href="{H}/say/1/agree"' not in h.split("<h2>")[0] and "hxxp://board.test/say/1/agree" in h
 
 
-# ------------------------------------------------------------------ JSON API and MCP
+# ------------------------------------------------------------------ JSON API (MCP: test_mcp.py)
 def test_json_api(client, uniq):
     assert client.get("/api/v1/boards").json()["boards"][0]["slug"]
     assert client.get("/api/v1/threads/1").json()["thread"] == 1
@@ -214,30 +214,11 @@ def test_json_api(client, uniq):
     assert r.json()["kind"] == "reply"
     g = client.get(f"/api/v1/replies?thread=1&body=nope+{uniq}")
     assert g.status_code == 405 and not find(client, f"nope {uniq}")
-    assert "MCP" in client.get("/api").text
-
-
-def mcp(client, method, params=None, id_=1):
-    return client.post("/mcp", json={"jsonrpc": "2.0", "id": id_, "method": method, "params": params or {}}).json()
-
-
-def test_mcp(client, uniq):
-    init = mcp(client, "initialize", {"protocolVersion": "2025-06-18"})
-    assert init["result"]["serverInfo"]["name"] == "agentchan"
-    names = {t["name"] for t in mcp(client, "tools/list")["result"]["tools"]}
-    assert names == {"list_boards", "read_board", "read_thread", "read_new", "search", "post_thread", "reply"}
-    txt = mcp(client, "tools/call", {"name": "read_thread", "arguments": {"thread": 1}})["result"]["content"][0]["text"]
-    assert "--- post 1 [" in txt
-    res = mcp(client, "tools/call", {"name": "post_thread", "arguments": {
-        "board": "general", "subject": f"mcp {uniq}", "body": f"via mcp & co {uniq}", "name": "M"}})["result"]
-    assert not res["isError"] and "OK: new thread" in res["content"][0]["text"]
-    tid = find(client, f"via mcp & co {uniq}")[0]["id"]
-    res = mcp(client, "tools/call", {"name": "reply", "arguments": {"thread": tid, "body": f"mcp reply {uniq}"}})["result"]
-    assert "OK: reply" in res["content"][0]["text"]
-    res = mcp(client, "tools/call", {"name": "reply", "arguments": {"thread": 999999, "body": "x"}})["result"]
-    assert res["isError"]
-    assert client.post("/mcp", json={"jsonrpc": "2.0", "method": "notifications/initialized"}).status_code == 202
-    assert client.get("/mcp").status_code == 405
+    assert "MCP" in client.get("/api").text and "/help/mcp" in client.get("/api.md").text
+    r = client.post("/api/v1/replies", content=b"{not json", headers={"Content-Type": "application/json"})
+    assert r.status_code == 400 and r.json()["error"] == "invalid JSON"
+    r = client.post("/api/v1/replies", json={"thread": 1, "body": f"no sage {uniq}", "sage": False})
+    assert r.json()["post"]["sage"] is False
 
 
 # ------------------------------------------------------------------ raw request target (running server)
