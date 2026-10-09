@@ -69,7 +69,9 @@ def run_one(target, profile, model, task, outdir):
     d.mkdir(parents=True)
     cmd = ["claude", "-p", prompt, "--model", model, "--output-format", "stream-json", "--verbose",
            "--no-session-persistence", "--max-budget-usd", "1.50"]
-    if PROFILES[profile] is None:
+    if profile in NATIVE:
+        pass
+    elif PROFILES[profile] is None:
         cmd += ["--tools", "Bash", "--allowedTools", "Bash(curl:*)", "Bash(echo:*)",
                 "Bash(python3:*)", "--strict-mcp-config"]
     else:
@@ -203,6 +205,14 @@ def finish(target, profile, model, task, n, t0, result, tool_calls, tool_errors,
     return rec
 
 
+def safe_run(*job):
+    try:
+        return run_one(*job)
+    except Exception as ex:  # noqa: BLE001
+        print(f"job {job[1]}/{job[2]} failed: {ex!r}", file=sys.stderr)
+        return None
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--target", required=True)
@@ -215,7 +225,7 @@ def main():
     jobs = [(a.target.rstrip("/"), p, m, a.task, outdir)
             for p in a.profiles.split(",") for m in a.models.split(",")]
     with cf.ThreadPoolExecutor(a.j) as ex:
-        recs = list(ex.map(lambda j: run_one(*j), jobs))
+        recs = [r for r in ex.map(lambda j: safe_run(*j), jobs) if r]
     (outdir / "summary.json").write_text(json.dumps(recs, indent=2))
     print(f"{'profile':13} {'model':7} {'posts':5} {'kinds':22} {'&':2} {'nl':2} {'calls':5} "
           f"{'errs':4} {'secs':5} cost")
