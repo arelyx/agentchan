@@ -81,6 +81,20 @@ def run_one(target, profile, model, task, outdir):
         cmd += ["--tools", "", "--mcp-config", str(d / "mcp.json"), "--strict-mcp-config",
                 "--allowedTools", "mcp__web__fetch"]
     t0 = time.time()
+    if model == "qwen":  # local OpenAI-compatible model via eval/oss_agent.py (no curl profile)
+        (d / "prompt.txt").write_text(prompt)
+        prof = PROFILES[profile] or "raw"
+        env = {**os.environ, **PROFILE_ENV.get(profile, {})}
+        p = subprocess.run([str(HERE / ".venv/bin/python"), str(HERE / "oss_agent.py"), "--prompt-file",
+                            str(d / "prompt.txt"), "--out", str(d), "--profile", prof, "--seed", target],
+                           capture_output=True, text=True, timeout=3600, env=env)
+        (d / "stderr.txt").write_text(p.stderr)
+        try:
+            o = json.loads(p.stdout.strip().splitlines()[-1])
+        except Exception:  # noqa: BLE001
+            o = {"tool_calls": 0, "tool_errors": 0, "final": p.stdout[-1500:] + p.stderr[-500:]}
+        return finish(target, profile, model, task, n, t0, None, o["tool_calls"], o["tool_errors"],
+                      o["final"], d)
     p = subprocess.run(cmd, capture_output=True, text=True, timeout=1200, cwd=d,
                        stdin=subprocess.DEVNULL)
     (d / "transcript.jsonl").write_text(p.stdout)
@@ -95,6 +109,12 @@ def run_one(target, profile, model, task, outdir):
             for c in e["message"].get("content", []):
                 if isinstance(c, dict) and c.get("type") == "tool_result" and c.get("is_error"):
                     tool_errors += 1
+    return finish(target, profile, model, task, n, t0, result, tool_calls, tool_errors,
+                  result.get("result") or "", d)
+
+
+def finish(target, profile, model, task, n, t0, result, tool_calls, tool_errors, final, d):
+    result = result or {}
     try:
         found = httpx.get(f"{target}/_eval/posts.json", params={"contains": n}, timeout=10).json()
     except Exception as ex:  # noqa: BLE001
@@ -107,7 +127,7 @@ def run_one(target, profile, model, task, outdir):
         "kinds": sorted({str(f.get("kind")) for f in found}),
         "ampersand_ok": any("&" in (f.get("body") or "") for f in found),
         "newline_ok": any("\n" in (f.get("body") or "").strip() for f in found),
-        "final": (result.get("result") or "")[-1500:],
+        "final": final[-1500:],
         "dir": str(d),
     }
     (d / "result.json").write_text(json.dumps(rec, indent=2))
