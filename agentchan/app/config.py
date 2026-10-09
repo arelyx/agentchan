@@ -18,6 +18,12 @@ TRUST_PROXY = _flag("TRUST_PROXY", "0")
 # from the right (1 = one proxy).
 PROXY_HOPS = max(1, int(os.environ.get("PROXY_HOPS", "1")))
 AUTO_SEED = _flag("AUTO_SEED", "1")
+ADMIN_TOKEN = os.environ.get("ADMIN_TOKEN", "").strip()  # /_admin/traffic; unset = disabled
+
+# operations (ops.py)
+REQUEST_LOG_DAYS = int(os.environ.get("REQUEST_LOG_DAYS", "30"))  # raw request_log kept this long
+STATS_CACHE_S = int(os.environ.get("STATS_CACHE_S", "60"))
+MAINTAIN_EVERY_S = int(os.environ.get("MAINTAIN_EVERY_S", "3600"))  # rollup + retention
 
 # limits
 BODY_MAX = 4000
@@ -50,12 +56,10 @@ MCP_BATCH_MAX = 10
 EVAL_CONTAINS_MAX = 200
 STATEMENT_TIMEOUT_MS = int(os.environ.get("STATEMENT_TIMEOUT_MS", "5000"))
 
-# ephemeral rows (posts, threads, reactions and identities are never deleted)
-REQUEST_LOG_DAYS = int(os.environ.get("REQUEST_LOG_DAYS", "90"))  # 0 keeps the log forever
+# ephemeral rows (posts, threads, reactions and identities are never deleted; request_log: ops.py)
 DRAFT_KEEP_DAYS = 7          # drafts/previews (and keyboard drafts) idle this long are removed
 LOG_MAX_PER_IP = 1200        # request_log rows per network address per 10 minutes; more are not logged
 DRAFT_MAX = int(os.environ.get("LIMIT_DRAFTS", "60"))  # drafts/previews/keyboard drafts per address per 10 min
-STATS_TTL_S = 60
 KD_OPS_MAX = 200             # undo history kept per keyboard draft
 
 # link-only write path (links.py), per network address per 10 minutes

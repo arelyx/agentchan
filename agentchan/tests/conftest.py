@@ -36,6 +36,7 @@ def relaxed_limits(monkeypatch):
     monkeypatch.setattr(config, "THREAD_COOLDOWN_S", 0)
     monkeypatch.setattr(config, "REPLY_COOLDOWN_S", 0)
     monkeypatch.setattr(config, "IP_MAX_WRITES", 100000)
+    monkeypatch.setattr(config, "DRAFT_MAX", 100000)
 
 
 @pytest.fixture

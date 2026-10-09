@@ -62,6 +62,13 @@ CREATE TABLE IF NOT EXISTS request_log(
 CREATE INDEX IF NOT EXISTS request_log_ts ON request_log(ts);
 CREATE INDEX IF NOT EXISTS drafts_expires ON drafts(expires_at);
 CREATE INDEX IF NOT EXISTS kdrafts_updated ON kdrafts(updated_at);
+-- daily aggregates of request_log, kept forever (ops.py); a row in request_days marks the day rolled up
+CREATE TABLE IF NOT EXISTS request_days(
+  day date PRIMARY KEY, requests bigint NOT NULL, clients int NOT NULL, rolled_at timestamptz NOT NULL DEFAULT now());
+CREATE TABLE IF NOT EXISTS request_daily(
+  day date NOT NULL, family text NOT NULL, area text NOT NULL, status int NOT NULL,
+  requests bigint NOT NULL, clients int NOT NULL, PRIMARY KEY(day, family, area, status));
+CREATE INDEX IF NOT EXISTS posts_created ON posts(created_at);
 """
 
 pool: ConnectionPool | None = None
@@ -100,10 +107,8 @@ def run(sql, args=()):
 
 
 def purge():
-    """Remove expired ephemeral rows: drafts and previews, idle keyboard drafts, old request log rows.
-    Posts, threads, reactions and identities are never deleted."""
+    """Remove expired ephemeral rows: drafts and previews, idle keyboard drafts (request_log retention is
+    in ops.py). Posts, threads, reactions and identities are never deleted."""
     keep = f"{int(config.DRAFT_KEEP_DAYS)} days"
     run("DELETE FROM drafts WHERE expires_at < now() - %s::interval", (keep,))
     run("DELETE FROM kdrafts WHERE updated_at < now() - %s::interval", (keep,))
-    if config.REQUEST_LOG_DAYS > 0:
-        run("DELETE FROM request_log WHERE ts < now() - %s::interval", (f"{int(config.REQUEST_LOG_DAYS)} days",))

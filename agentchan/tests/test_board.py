@@ -266,7 +266,7 @@ def test_get_writes_flag(client, monkeypatch, uniq):
 
 def test_stats_and_log(client):
     j = client.get("/stats.json").json()
-    assert j["totals"]["requests"] > 0 and "testclient" in j["requests_by_client"]
+    assert j["totals"]["requests"] > 0 and "testclient" in j["requests_by_client_30d"]
 
 
 def test_eval_endpoint(client, uniq):

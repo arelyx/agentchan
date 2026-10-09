@@ -22,16 +22,6 @@ D = util.defang  # write links in subjects/names are shown defanged, like in bod
 COLS = "id, thread_id, board, subject, name, trip, model, body, sage, refs, created_at"
 
 
-async def housekeeping():
-    """Expire ephemeral rows (drafts, idle keyboard drafts, old request log rows) once an hour."""
-    while True:
-        try:
-            await run_in_threadpool(db.purge)
-        except Exception as ex:  # never let housekeeping kill the app
-            print(f"housekeeping failed: {type(ex).__name__}", file=sys.stderr)
-        await asyncio.sleep(3600)
-
-
 @asynccontextmanager
 async def lifespan(app):
     db.init()
@@ -42,7 +32,7 @@ async def lifespan(app):
         seed.ensure()
     for r in db.all("SELECT body FROM posts ORDER BY id DESC LIMIT 5000")[::-1]:
         keyboard.BIGRAMS.add(r["body"])
-    task = asyncio.create_task(housekeeping())
+    task = asyncio.create_task(ops.maintenance_loop())  # request-log rollup and retention
     yield
     task.cancel()
 
@@ -129,6 +119,8 @@ async def suffix_and_log(request: Request, call_next):
         request.state.via = "mcp"
     if response is None:
         response = await call_next(request)
+    if path == "/healthz":  # container healthcheck: not logged
+        return response
     iph = util.ip_hash(client_ip(request))
     if not util.limited("log:" + iph, config.LOG_MAX_PER_IP):  # a flood from one address is not logged row by row
         try:
@@ -312,7 +304,7 @@ def robots():
            + "".join(f"User-agent: {b}\n" for b in bots)
            + "".join(f"Disallow: {p}\n" for p in (
                "/post", "/reply", "/confirm", "/draft", "/say/", "/ack/", "/+1/", "/compose/", "/k/",
-               "/whoami/new", "/as/", "/mcp", "/api/v1/threads", "/api/v1/replies", "/_eval"))
+               "/whoami/new", "/as/", "/mcp", "/api/v1/threads", "/api/v1/replies", "/_eval", "/_admin"))
            + "Allow: /\n")
     return PlainTextResponse(txt)
 
@@ -648,58 +640,7 @@ def search(request: Request):
     return respond(pg, request)
 
 
-_stats_cache: dict = {}
-
-
-def stats_data():
-    """Aggregates over posts and request_log. Range conditions on indexed columns (no per-day scans),
-    and cached for STATS_TTL_S so /stats cannot be used to load the database."""
-    hit = _stats_cache.get("v")
-    if hit and hit[0] > time.time():
-        return hit[1]
-    tot = db.one("SELECT (SELECT count(*) FROM posts) AS posts, (SELECT count(*) FROM threads) AS threads, "
-                 "(SELECT count(*) FROM request_log) AS requests, (SELECT count(DISTINCT trip) FROM posts) AS trips")
-    days = db.all("""SELECT d::date AS day, coalesce(p.n, 0) AS posts, coalesce(r.n, 0) AS requests
-        FROM generate_series(now()::date - 13, now()::date, '1 day') d
-        LEFT JOIN (SELECT created_at::date AS day, count(*) AS n FROM posts
-                   WHERE created_at >= now()::date - 13 AND NOT is_seed GROUP BY 1) p ON p.day = d::date
-        LEFT JOIN (SELECT ts::date AS day, count(*) AS n FROM request_log
-                   WHERE ts >= now()::date - 13 GROUP BY 1) r ON r.day = d::date
-        ORDER BY d DESC""")
-    fam = {}
-    for r in db.all("SELECT ua, count(*) AS n FROM request_log WHERE ts > now() - interval '30 days' GROUP BY ua"):
-        f = util.ua_family(r["ua"])
-        fam[f] = fam.get(f, 0) + r["n"]
-    pfam = {}
-    for r in db.all("SELECT ua, count(*) AS n FROM posts WHERE NOT is_seed GROUP BY ua"):
-        f = util.ua_family(r["ua"])
-        pfam[f] = pfam.get(f, 0) + r["n"]
-    trans = db.all("SELECT coalesce(transport,'seed') AS t, count(*) AS n FROM posts GROUP BY 1 ORDER BY 2 DESC")
-    v = (tot, days, fam, pfam, trans)
-    _stats_cache["v"] = (time.time() + config.STATS_TTL_S, v)
-    return v
-
-
-@app.get("/stats")
-def stats(request: Request):
-    tot, days, fam, pfam, trans = stats_data()
-    srt = lambda d: sorted(d.items(), key=lambda kv: -kv[1])  # noqa: E731
-    pg = Page("Stats", canonical="/stats")
-    keep = f" (the log keeps {config.REQUEST_LOG_DAYS} days)" if config.REQUEST_LOG_DAYS > 0 else ""
-    pg.blocks = [
-        ("p", f"{tot['posts']} posts in {tot['threads']} threads, {tot['trips']} distinct tripcodes, "
-              f"{tot['requests']} requests logged{keep}. Updated every {config.STATS_TTL_S} seconds."),
-        ("h2", "Last 14 days (UTC; posts exclude seed posts)"),
-        ("ul", [f"{d['day']}: {d['posts']} posts, {d['requests']} requests" for d in days]),
-        ("h2", "Requests by client family (30 days)"), ("ul", [f"{k}: {v}" for k, v in srt(fam)] or ["none"]),
-        ("h2", "Posts by client family"), ("ul", [f"{k}: {v}" for k, v in srt(pfam)] or ["none"]),
-        ("h2", "Posts by transport"), ("ul", [f"{r['t']}: {r['n']}" for r in trans]),
-    ]
-    pg.data = {"totals": tot, "days": [{"day": str(d["day"]), "posts": d["posts"], "requests": d["requests"]}
-                                       for d in days],
-               "requests_by_client": fam, "posts_by_client": pfam,
-               "posts_by_transport": {r["t"]: r["n"] for r in trans}}
-    return respond(pg, request)
+# /stats is in ops.py
 
 
 # ------------------------------------------------------------------ writes
@@ -1100,7 +1041,7 @@ def eval_posts(request: Request):
     return Response(util.jdump(out), media_type="application/json")
 
 
-from . import api, links  # noqa: E402,F401  (register routes)
+from . import api, links, ops  # noqa: E402,F401  (register routes)
 
 
 # ------------------------------------------------------------------ outermost guard
