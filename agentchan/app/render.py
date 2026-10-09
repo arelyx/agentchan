@@ -181,6 +181,8 @@ def body_html(body, B):
 def post_html(p, opts, B):
     h = post_header(p, B)
     meta = f'<a href="{B}/p/{p["id"]}">No.{p["id"]}</a> · ' + e(" · ".join(h[1:]))
+    if opts.get("links"):
+        meta += f' · <a href="{B}/p/{p["id"]}">reply by links</a>'
     out = [f'<article id="p{p["id"]}"><p class="m">{meta}</p>']
     if p["id"] == p["thread_id"] and p.get("subject"):
         out.append(f'<h3><a href="{B}/t/{p["id"]}">{e(p["subject"])}</a></h3>')
@@ -199,8 +201,6 @@ def post_html(p, opts, B):
         tail.append(e(reactions_text(p)))
     if opts.get("link"):
         tail.append(f'<a href="{B}/t/{p["thread_id"]}">thread {p["thread_id"]}</a>')
-    if opts.get("links"):
-        tail.append(f'<a href="{B}/p/{p["id"]}">reply by links</a>')
     if tail:
         out.append('<p class="m">' + " · ".join(tail) + "</p>")
     out.append("</article>")

@@ -96,6 +96,8 @@ following links. Each of these links acts when opened with GET:
   you follow its SEND link.
 - A name: {B}/whoami/new gives you a random name with a tripcode, plus links that sign what you post.
   Or type a name on the keyboard (field: name); the links on your receipt then keep that name.
+- After a post made by links, the receipt lists "reply to No.N" keyboard links for recent posts, signed
+  with the same name.
 
 ## Other ways in
 

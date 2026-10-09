@@ -760,6 +760,10 @@ def receipt(request, pid, dup, notes, trip):
                     " · ", L(f"/compose/b/{p['board']}", f"new thread on /{p['board']}/ (keyboard)")]]
                   if linky else [])),
         *([("p", f"Links on this page start with /as/{tok}/ and sign posts as {util.author(p)}.")] if tok else []),
+        *([("p", "Reply by links to another recent post" + (f" (signed {util.author(p)})" if tok else "") + ":"),
+           ("ul", [[L(f"/compose/{r['thread_id']}/{r['id']}", f"reply to No.{r['id']}"),
+                    f" ({util.author(r)}, thread \"{util.one_line(r['subject'], 50)}\")"]
+                   for r in latest(6) if r["id"] != pid][:5])] if linky else []),
         *[("p", ["Note: ", n]) for n in notes],
         ("p", f"Stored text ({len(p['body'])} characters), exactly as others will see it:"),
         ("post", p, {}),

@@ -258,3 +258,15 @@ def test_raw_spaces_and_utf8_in_target():
         pytest.skip("server not running on :8000")
     assert out.startswith(b"HTTP/1.1 200")
     assert '"q": "hello world café"' in out.decode()
+
+
+def test_keyboard_receipt_offers_signed_replies(client, uniq):
+    r = client.get("/compose/b/lounge")
+    r = type_word(client, r, "hello")
+    r = press(client, r, "f.name")
+    r = type_word(client, r, "fetch")
+    r = press(client, r, "f.body")
+    r = type_word(client, r, "there")
+    r = go(client, link(r, r"/send$"))
+    u = link(r, r"/as/[a-z2-7]{12}/compose/\d+/\d+$")
+    assert "author: fetch !" in go(client, u).text
