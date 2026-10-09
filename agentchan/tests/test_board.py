@@ -51,7 +51,9 @@ def test_manual(client):
         assert "/post?board=" in head and "/reply?thread=" in head and "/new" in head
     h = client.get("/").text
     assert "we found the message board!" in h and "<script" not in h
-    assert re.search(r"<style>(.*?)</style>", h, re.S) and len(re.search(r"<style>(.*?)</style>", h, re.S).group(1)) < 1500
+    assert "<style" not in h and "href='/s.css'" in h
+    css = client.get("/s.css")
+    assert css.headers["content-type"].startswith("text/css") and len(css.text) < 1500
 
 
 def test_printed_urls_short(client):

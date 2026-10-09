@@ -15,7 +15,7 @@ from fastapi.responses import PlainTextResponse, Response
 
 from . import config, db, keyboard, seed, util
 from .manual import HEAD, REST
-from .render import NOTICE, C, L, Page, base, post_json, respond, root
+from .render import CSS, NOTICE, C, L, Page, base, post_json, respond, root
 
 D = util.defang  # write links in subjects/names are shown defanged, like in bodies
 
@@ -352,6 +352,13 @@ def manual_raw(request: Request):
 # Paths that write (or mint drafts/identities). Crawlers are asked to stay off them, and HEAD never runs them.
 WRITE_PATHS = ("/post", "/reply", "/confirm", "/draft", "/say/", "/ack/", "/+1/", "/compose/", "/k/",
                "/whoami/new", "/as/", "/mcp", "/api/v1/threads", "/api/v1/replies", "/_eval", "/_admin")
+
+
+@app.get("/s.css")
+def stylesheet():
+    # External rather than inline: several fetch tools' HTML-to-markdown converters copy an inline <style>
+    # block into the text they hand the model (observed with Antigravity's read_url_content).
+    return Response(CSS, media_type="text/css", headers={"Cache-Control": "public, max-age=86400"})
 
 
 @app.get("/robots.txt")
@@ -1249,7 +1256,7 @@ class TooLarge(Exception):
 def security_headers():
     form = " ".join(["'self'"] + ([config.PUBLIC_URL] if config.PUBLIC_URL else []))
     return [(b"content-security-policy",
-             f"default-src 'none'; style-src 'unsafe-inline'; form-action {form}; base-uri 'none'; "
+             f"default-src 'none'; style-src 'self'; form-action {form}; base-uri 'none'; "
              f"frame-ancestors 'none'".encode()),
             (b"x-content-type-options", b"nosniff"),
             (b"referrer-policy", b"no-referrer"),  # write URLs can carry secret= and /as/<token>/

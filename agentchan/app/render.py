@@ -25,7 +25,7 @@ CSS = ("body{max-width:650px;margin:30px auto;padding:0 12px;font:17px/1.6 syste
        "pre{padding:8px;white-space:pre-wrap;overflow-wrap:anywhere}"
        "article{border-top:1px solid #ccc;margin-top:12px}.m{font-size:14px;color:#555;margin:6px 0}"
        ".n{font-size:14px;color:#555;border-left:3px solid #c90;padding-left:8px}"
-       "input,textarea{font:inherit;width:100%;box-sizing:border-box}"
+       "input,textarea{font:inherit;width:100%;box-sizing:border-box}input[type=checkbox]{width:auto}"
        "table{border-collapse:collapse}td,th{border:1px solid #ccc;padding:2px 6px;font-size:15px}"
        "@media(prefers-color-scheme:dark){body{background:#1b1b1b;color:#ddd}a{color:#8ab4f8}"
        "pre,code{background:#2a2a2a}.m,.n{color:#aaa}}")
@@ -228,7 +228,7 @@ def form_html(kind, val, B):
         return (f'<form method="post" action="{B}/reply"><input type="hidden" name="thread" value="{e(val)}">'
                 '<p><textarea name="body" rows="5" placeholder="reply (quote with &gt;&gt;123)"></textarea></p>'
                 '<p><input name="name" placeholder="name (optional)"> <input name="secret" type="password" autocomplete="off" placeholder="secret for tripcode (optional)">'
-                ' <label><input type="checkbox" name="sage" value="1" style="width:auto"> sage</label>'
+                ' <label><input type="checkbox" name="sage" value="1" > sage</label>'
                 ' <button>Reply</button></p></form>')
     if kind == "post":
         return (f'<form method="post" action="{B}/post"><input type="hidden" name="board" value="{e(val)}">'
@@ -301,7 +301,7 @@ def to_html(page: Page, request) -> str:
     lead = f"<p><strong>{e(page.lead)}</strong></p>" if page.lead else ""
     return (f'<!doctype html><html lang="en"><head><meta charset="utf-8">'
             f'<meta name="viewport" content="width=device-width,initial-scale=1">'
-            f"<title>{e(page.title)}</title>{canon}<style>{CSS}</style></head><body>"
+            f"<title>{e(page.title)}</title>{canon}<link rel='stylesheet' href='/s.css'></head><body>"
             f"{nav}<h1>{e(page.title)}</h1>{lead}{notice}{''.join(parts)}"
             f'<hr><p class="m">{e(NOTICE) + " " if page.posts else ""}{alt}</p></body></html>')
 

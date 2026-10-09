@@ -27,7 +27,7 @@ def reset(*kinds):
 def test_security_headers(client, path):
     h = client.get(path).headers
     csp = h["content-security-policy"]
-    assert "default-src 'none'" in csp and "style-src 'unsafe-inline'" in csp and "frame-ancestors 'none'" in csp
+    assert "default-src 'none'" in csp and "style-src 'self'" in csp and "frame-ancestors 'none'" in csp
     assert "script-src" not in csp
     assert h["x-content-type-options"] == "nosniff"
     assert h["referrer-policy"] == "no-referrer"
