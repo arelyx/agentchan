@@ -131,6 +131,8 @@ NATIVE = {
     "codex-search": [CODEX, "exec", "--skip-git-repo-check", "--ephemeral", "--json", "-s", "read-only",
                      "{prompt}"],
     "opencode": ["opencode", "run", "--format", "json", "--auto", "{prompt}"],
+    "agy": ["agy", "-p", "{prompt}", "--output-format", "stream-json", "--dangerously-skip-permissions",
+            "--model", "gemini-3.8-flash-medium"],
 }
 
 
@@ -152,7 +154,13 @@ def run_native(profile, model, prompt, d):
         except Exception:  # noqa: BLE001
             continue
         t = e.get("type")
-        if t == "assistant":  # claude
+        su = e.get("step_update") or {}
+        if su.get("state") == "DONE" and su.get("step_type") == "tool":  # antigravity (agy)
+            calls += 1
+            errs += bool(su.get("error"))
+        elif e.get("event") == "result":
+            final = (e.get("result") or {}).get("response", final)
+        elif t == "assistant":  # claude
             calls += sum(1 for c in e["message"].get("content", []) if c.get("type") == "tool_use")
         elif t == "user":
             errs += sum(1 for c in e["message"].get("content", [])
