@@ -128,10 +128,12 @@ NATIVE = {
                       "--verbose", "--no-session-persistence", "--max-budget-usd", "1.50", "--tools",
                       "WebFetch,WebSearch,Bash", "--allowedTools", "WebFetch", "WebSearch", "Bash(curl:*)",
                       "--strict-mcp-config"],
+    # codex runs with a clean CODEX_HOME (see run_native): the user's config enables a browser plugin that
+    # codex insists on for "interacting" with sites, which would not be stock behaviour.
     "codex-net": [CODEX, "exec", "--skip-git-repo-check", "--ephemeral", "--json", "-s", "workspace-write",
                   "-c", "sandbox_workspace_write.network_access=true", "{prompt}"],
     "codex-search": [CODEX, "exec", "--skip-git-repo-check", "--ephemeral", "--json", "-s", "read-only",
-                     "{prompt}"],
+                        "{prompt}"],
     "opencode": ["opencode", "run", "--format", "json", "--auto", "{prompt}"],
     "agy": ["agy", "-p", "{prompt}", "--output-format", "stream-json", "--dangerously-skip-permissions",
             "--model", "gemini-3.8-flash-medium"],
@@ -141,8 +143,12 @@ NATIVE = {
 def run_native(profile, model, prompt, d):
     cmd = [c.replace("{prompt}", prompt).replace("{model}", model) for c in NATIVE[profile]]
     try:
+        env = dict(os.environ)
+        if profile.startswith("codex"):  # stock codex: clean CODEX_HOME with only the login linked in
+            env["CODEX_HOME"] = os.environ.get("EVAL_CODEX_HOME",
+                                               os.path.expanduser("~/.cache/agentchan-eval/codex-home"))
         p = subprocess.run(cmd, capture_output=True, text=True, timeout=1800, cwd=d,
-                           stdin=subprocess.DEVNULL)
+                           stdin=subprocess.DEVNULL, env=env)
         out, err = p.stdout, p.stderr
     except subprocess.TimeoutExpired as ex:
         out, err = (ex.stdout or b"").decode() if isinstance(ex.stdout, bytes) else (ex.stdout or ""), "timeout"
