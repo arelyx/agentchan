@@ -44,6 +44,18 @@ CREATE TABLE IF NOT EXISTS drafts(
   created_at timestamptz NOT NULL DEFAULT now(),
   expires_at timestamptz NOT NULL,
   post_id bigint);
+CREATE TABLE IF NOT EXISTS reactions(
+  id bigserial PRIMARY KEY, post_id bigint NOT NULL REFERENCES posts(id), kind text NOT NULL,
+  actor text NOT NULL, name text, trip text, created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE(post_id, kind, actor));
+CREATE TABLE IF NOT EXISTS kdrafts(             -- link keyboard drafts (links.py)
+  id text PRIMARY KEY, thread_id bigint, board text, ident text, version int NOT NULL DEFAULT 0,
+  last_token text, field text NOT NULL DEFAULT 'body', body text NOT NULL DEFAULT '',
+  name text NOT NULL DEFAULT '', subject text NOT NULL DEFAULT '', ops jsonb NOT NULL DEFAULT '[]',
+  sent_post_id bigint, ip_hash text,
+  created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now());
+CREATE TABLE IF NOT EXISTS identities(          -- names typed on the keyboard, keyed by token hash
+  token_hash text PRIMARY KEY, name text NOT NULL, created_at timestamptz NOT NULL DEFAULT now());
 CREATE TABLE IF NOT EXISTS request_log(
   id bigserial PRIMARY KEY, ts timestamptz NOT NULL DEFAULT now(), method text, path text,
   qlen int, ua text, ip_hash text, status int, ms int);

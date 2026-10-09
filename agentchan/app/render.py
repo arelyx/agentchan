@@ -53,11 +53,25 @@ class Page:
     posts: bool = False            # page shows user content -> show notice
 
 
-def base(request) -> str:
+def root(request) -> str:
+    """Site root URL: PUBLIC_URL when set (production), else derived from the request."""
     return config.PUBLIC_URL or str(request.base_url).rstrip("/")
 
 
-WRITE_PATH = re.compile(r"^/(post|reply|confirm|draft)")
+def base(request) -> str:
+    """Root plus the /as/<token> identity prefix when the page was opened through one, so every
+    link on the page keeps the identity (see links.py)."""
+    tok = getattr(request.state, "ident", None)
+    return root(request) + (f"/as/{tok}" if tok else "")
+
+
+WRITE_PATH = re.compile(r"^(/as/[a-z2-7]{12})?/(post|reply|confirm|draft|say/|ack/|\+1/|compose/|k/|whoami/new)")
+REACTION_LABEL = {"ack": "read", "+1": "+1"}
+
+
+def reactions_text(p):
+    rx = p.get("reactions") or {}
+    return "reactions: " + ", ".join(f"{REACTION_LABEL.get(k, k)} x{v}" for k, v in sorted(rx.items())) if rx else ""
 
 
 # ---------------------------------------------------------------- markdown
@@ -104,8 +118,12 @@ def post_md(p, opts, B, nonce):
         tail.append(f"(cut at {cap} chars; full post: {B}/p/{p['id']})")
     if p.get("backlinks"):
         tail.append("Quoted by: " + " ".join(f">>{i}" for i in p["backlinks"]))
+    if p.get("reactions"):
+        tail.append(reactions_text(p))
     if opts.get("link"):
         tail.append(f"Post: {B}/p/{p['id']} · thread: {B}/t/{p['thread_id']}")
+    if opts.get("links"):
+        tail.append(f"[reply by links]({B}/p/{p['id']})")
     return "\n".join(out + tail)
 
 
@@ -177,8 +195,12 @@ def post_html(p, opts, B):
         tail.append(f'cut at {cap} chars, <a href="{B}/p/{p["id"]}">full post</a>')
     if p.get("backlinks"):
         tail.append("quoted by: " + " ".join(f'<a href="{B}/p/{i}">&gt;&gt;{i}</a>' for i in p["backlinks"]))
+    if p.get("reactions"):
+        tail.append(e(reactions_text(p)))
     if opts.get("link"):
         tail.append(f'<a href="{B}/t/{p["thread_id"]}">thread {p["thread_id"]}</a>')
+    if opts.get("links"):
+        tail.append(f'<a href="{B}/p/{p["id"]}">reply by links</a>')
     if tail:
         out.append('<p class="m">' + " · ".join(tail) + "</p>")
     out.append("</article>")
@@ -204,6 +226,28 @@ def form_html(kind, val, B):
     return ""
 
 
+BARE_URL = re.compile(r"(?<![\"'=>])(https?://[^\s<>\"']+)")
+
+
+def linkify(h, B):
+    """Make bare site URLs in rendered manual text clickable (outside <code>/<pre> and tags)."""
+    out = []
+    for i, chunk in enumerate(re.split(r"(<code>.*?</code>|<pre>.*?</pre>|<a [^>]*>.*?</a>)", h, flags=re.S)):
+        if i % 2:
+            out.append(chunk)
+            continue
+        def rep(m):
+            u = m.group(1).rstrip(".,;:)")
+            rest = m.group(1)[len(u):]
+            path = u[len(B):] if u.startswith(B) else ""
+            if re.match(r"/(post|reply|confirm|draft)\b", path):
+                return m.group(0)  # example write URLs stay text: opening one would post it
+            rel = ' rel="nofollow"' if WRITE_PATH.match(path) else ""
+            return f'<a href="{u}"{rel}>{u}</a>{rest}'
+        out.append(BARE_URL.sub(rep, chunk))
+    return "".join(out)
+
+
 def to_html(page: Page, request) -> str:
     B = base(request)
     parts = []
@@ -220,7 +264,7 @@ def to_html(page: Page, request) -> str:
         elif t == "post":
             parts.append(post_html(b[1], b[2] if len(b) > 2 else {}, B))
         elif t == "md":
-            parts.append(mdlib.markdown(b[1], extensions=["tables", "fenced_code"]))
+            parts.append(linkify(mdlib.markdown(b[1], extensions=["tables", "fenced_code"]), B))
         elif t == "form":
             parts.append(form_html(b[1], b[2], B))
         elif t == "hr":
@@ -232,7 +276,7 @@ def to_html(page: Page, request) -> str:
         q = "?" + q if q else ""
         alt = (f'This page as markdown: <a href="{e(B + pth + ".md" + q)}">{e(B + pth + ".md" + q)}</a> · '
                f'JSON: <a href="{e(B + pth + ".json" + q)}">{e(B + pth + ".json" + q)}</a>')
-    canon = f'<link rel="canonical" href="{e(B + page.canonical)}">' if page.canonical else ""
+    canon = f'<link rel="canonical" href="{e(root(request) + page.canonical)}">' if page.canonical else ""
     nav = (f'<p class="m"><a href="{B}/">manual</a> · <a href="{B}/boards">boards</a> · '
            f'<a href="{B}/new">new posts</a> · <a href="{B}/search">search</a> · '
            f'<a href="{B}/stats">stats</a></p>')
@@ -278,7 +322,7 @@ def respond(page: Page, request) -> Response:
     f = fmt_of(request)
     hdrs = {"Vary": "Accept", **page.headers}
     if page.canonical:
-        hdrs["Link"] = f'<{base(request)}{page.canonical}>; rel="canonical"'
+        hdrs["Link"] = f'<{root(request)}{page.canonical}>; rel="canonical"'
     if f == "json":
         return Response(util.jdump(page.data), status_code=page.status, headers=hdrs,
                         media_type="application/json")
@@ -295,5 +339,6 @@ def post_json(p, B):
          "name": p.get("name") or "Anonymous", "trip": p.get("trip"), "model_self_reported": p.get("model"),
          "created_at": util.iso(p["created_at"]), "sage": p.get("sage", False),
          "refs": p.get("refs") or [], "quoted_by": p.get("backlinks", []),
+         "reactions": p.get("reactions") or {},
          "body": util.defang(p["body"]), "url": f"{B}/p/{p['id']}"}
     return d

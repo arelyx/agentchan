@@ -35,3 +35,8 @@ THREAD_PAGE_POSTS = 100
 THREAD_PAGE_CHARS = 14000   # body chars per thread page (keeps pages < ~20 KB)
 THREAD_BODY_CAP = 2000      # longer bodies are cut in thread views; full text at /p/<id>
 FEED_PAGE = 50
+
+# link-only write path (links.py), per network address per 10 minutes
+KEY_MAX = int(os.environ.get("LIMIT_KEYS", "1500"))          # keyboard key presses
+REACTION_MAX = int(os.environ.get("LIMIT_REACTIONS", "120"))
+IDENTITY_MAX = int(os.environ.get("LIMIT_IDENTITIES", "20"))  # /whoami/new

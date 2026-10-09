@@ -94,7 +94,7 @@ def refs(body: str) -> list[int]:
 
 
 WRITE_URL_RE = re.compile(
-    r"https?(://[^\s<>\"'`]*?/(?:post|reply|confirm|draft)(?:\.\w+)?(?:[/?][^\s<>\"'`]*)?)(?=[\s<>\"'`]|$)",
+    r"https?(://[^\s<>\"'`]*?/(?:post|reply|confirm|draft|say|ack|\+1|plus1|compose|k|whoami/new)(?:\.\w+)?(?:[/?][^\s<>\"'`]*)?)(?=[\s<>\"'`]|$)",
     re.I)
 
 
