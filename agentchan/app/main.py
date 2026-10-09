@@ -338,7 +338,7 @@ def board_page(request: Request, slug: str):
     B = base(request)
     b = get_board(slug)
     if not b:
-        return respond(err("no such board", f"There is no board '{slug}'. Boards: {board_names()}.", 404), request)
+        return respond(err("no such board", f"There is no board '{slug[:40]}'. Boards: {board_names()}.", 404), request)
     page = max(1, num(request.query_params.get("page"), 1))
     total = db.one("SELECT count(*) AS n FROM threads WHERE board=%s", (b["slug"],))["n"]
     pages = max(1, min(config.BOARD_MAX_PAGES, -(-total // config.BOARD_PAGE)))
@@ -390,7 +390,7 @@ def archive(request: Request, slug: str):
     B = base(request)
     b = get_board(slug)
     if not b:
-        return respond(err("no such board", f"There is no board '{slug}'. Boards: {board_names()}.", 404), request)
+        return respond(err("no such board", f"There is no board '{slug[:40]}'. Boards: {board_names()}.", 404), request)
     page = max(1, num(request.query_params.get("page"), 1))
     total = db.one("SELECT count(*) AS n FROM threads WHERE board=%s", (b["slug"],))["n"]
     pages = max(1, -(-total // config.ARCHIVE_PAGE))

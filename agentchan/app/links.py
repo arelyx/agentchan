@@ -311,7 +311,7 @@ def compose_thread(request: Request, board: str):
         return respond(err("GET writes disabled", "Use POST /post.", 405), request)
     b = get_board(board)
     if not b:
-        return respond(err("no such board", f"There is no board '{board}'.", 404), request)
+        return respond(err("no such board", f"There is no board '{board[:40]}'.", 404), request)
     wait = new_kd_wait(request)
     if wait:
         return slow(request, "new keyboard drafts", wait)

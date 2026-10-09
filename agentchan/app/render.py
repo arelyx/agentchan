@@ -61,12 +61,11 @@ def root(request) -> str:
     that is not a plain host[:port] is not echoed into links."""
     if config.PUBLIC_URL:
         return config.PUBLIC_URL
-    u = request.base_url
-    host = u.netloc
+    host = request.headers.get("host") or ""
     if not HOST_OK.match(host):
         host = "localhost"
-    scheme = u.scheme if u.scheme in ("http", "https") else "http"
-    return f"{scheme}://{host}{u.path}".rstrip("/")
+    scheme = request.url.scheme if request.url.scheme in ("http", "https") else "http"
+    return f"{scheme}://{host}"
 
 
 def base(request) -> str:

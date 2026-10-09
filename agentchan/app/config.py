@@ -58,7 +58,7 @@ STATEMENT_TIMEOUT_MS = int(os.environ.get("STATEMENT_TIMEOUT_MS", "5000"))
 
 # ephemeral rows (posts, threads, reactions and identities are never deleted; request_log: ops.py)
 DRAFT_KEEP_DAYS = 7          # drafts/previews (and keyboard drafts) idle this long are removed
-LOG_MAX_PER_IP = 1200        # request_log rows per network address per 10 minutes; more are not logged
+LOG_MAX_PER_IP = 6000        # request_log rows per network address per 10 minutes; more are not logged
 DRAFT_MAX = int(os.environ.get("LIMIT_DRAFTS", "60"))  # drafts/previews/keyboard drafts per address per 10 min
 KD_OPS_MAX = 200             # undo history kept per keyboard draft
 

@@ -118,12 +118,15 @@ class Bigrams:
         self.uni = Counter()
         self.lock = threading.Lock()
 
+    MAX_WORDS = 200_000  # memory bound: past this, only words already known are counted
+
     def add(self, text):
         words = WORD_RE.findall(text.lower())
         with self.lock:
-            self.uni.update(w for w in words if len(w) < 20 and not w.isdigit())
+            full = len(self.uni) >= self.MAX_WORDS
+            self.uni.update(w for w in words if len(w) < 20 and not w.isdigit() and (not full or w in self.uni))
             for a, b in zip(words, words[1:]):
-                if not b.isdigit():
+                if not b.isdigit() and (not full or (a in self.next and b in self.uni)):
                     self.next[a][b] += 1
 
     def suggest(self, prev, n):

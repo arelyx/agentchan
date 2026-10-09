@@ -337,3 +337,12 @@ def test_raw_protocol_malformed(data):
         pytest.skip("server not running on :8000")
     assert out == b"" or re.match(rb"HTTP/1.1 (400|404|414|413) ", out), out[:80]
     assert raw(b"GET /healthz HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n").startswith(b"HTTP/1.1 200")
+
+
+def test_bigrams_bounded(monkeypatch):
+    from app.keyboard import Bigrams
+    b = Bigrams()
+    monkeypatch.setattr(Bigrams, "MAX_WORDS", 3)
+    b.add("alpha beta gamma delta epsilon")
+    b.add("zeta eta alpha beta")
+    assert len(b.uni) <= 5 and "zeta" not in b.uni and b.uni["alpha"] == 2

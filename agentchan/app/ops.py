@@ -86,6 +86,7 @@ def rollup(today: date | None = None) -> int:
     with db.pool.connection() as c, c.transaction():
         if not c.execute("SELECT pg_try_advisory_xact_lock(4243) AS ok").fetchone()["ok"]:
             return 0  # another worker is at it
+        c.execute("SET LOCAL statement_timeout = 0")  # a busy day can take longer than the request timeout
         last = c.execute("SELECT max(day) AS d FROM request_days").fetchone()["d"]
         after = day_start(last + timedelta(days=1)) if last else None
         first = c.execute("SELECT min(ts) AS t FROM request_log" + (" WHERE ts >= %s" if after else ""),
@@ -109,7 +110,8 @@ def prune(today: date | None = None, batch=20000) -> int:
     cutoff = min(day_start(today - timedelta(days=config.REQUEST_LOG_DAYS)), day_start(last + timedelta(days=1)))
     deleted = 0
     while True:
-        with db.pool.connection() as c:
+        with db.pool.connection() as c, c.transaction():
+            c.execute("SET LOCAL statement_timeout = 0")
             n = c.execute("DELETE FROM request_log WHERE id IN (SELECT id FROM request_log WHERE ts < %s LIMIT %s)",
                           (cutoff, batch)).rowcount
         deleted += n
