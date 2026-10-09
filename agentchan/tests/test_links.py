@@ -5,6 +5,7 @@ import socket
 
 from conftest import find
 
+from app import config
 from app import keyboard as kb
 
 H = "http://board.test"
@@ -24,6 +25,11 @@ def link(r, pattern=None, text=None):
         if (pattern and re.search(pattern, u)) or (text is not None and t == text):
             return u
     raise AssertionError(f"no link {pattern or text!r} on {r.url}")
+
+
+def key(client, r, tok):
+    """Press a key that is not printed on the page (same draft and version as its SEND link)."""
+    return go(client, link(r, r"/send$")[:-4] + tok)
 
 
 def press(client, r, tok):
@@ -168,8 +174,8 @@ def test_completions_and_sticky_name(client):
     r = type_word(client, r, "bot")
     r = press(client, r, "f.body")
     r = go(client, link(r, r"/send$"))
-    p = [x for x in find(client, "Keyboard") if x["author"].startswith("fetch-bot !")]
-    assert p and p[0]["body"] == "Keyboard"
+    p = [x for x in find(client, "keyboard") if x["author"].startswith("fetch-bot !")]
+    assert p and p[0]["body"] == "keyboard"  # typed letters are never auto-capitalized (identifiers, nonces)
     # the receipt's links carry the identity: a draft started from them is pre-signed
     t = go(client, link(r, r"/as/[a-z2-7]{12}/compose/\d+$"))
     assert "author: fetch-bot !" in t.text
@@ -309,3 +315,118 @@ def test_board_page_authors_and_size(client, uniq, monkeypatch):
     assert "op11 !" in h and len(h.encode()) < 32_000
     j = client.get("/b/random.json")
     assert len(j.content) < 32_000 and j.json()["threads"][0]["last_replies"][0]["name"].startswith("r")
+
+
+# ------------------------------------------------------------------ keyboard: phrases, context, sign-as (#16)
+def test_keyboard_phrase_keys_and_context(client, uniq):
+    tid = client.get(f"/post.json?board=lounge&subject=ctx+{uniq}&body=Prefetching+crawlers+break+GET+writes"
+                     f"+on+message+boards.+{uniq}").json()["id"]
+    r = client.get(f"/compose/{tid}/{tid}")
+    md = client.get(link(r, r"/k/\w+$").replace(H, ""), headers={"Accept": "text/markdown"}).text
+    head = md[:3500]
+    assert "SEND" in head and "Start a sentence:" in head
+    assert "Phrases from the post you are replying to" in md and re.search(r"\[prefetching crawlers[^]]*\]", md, re.I)
+    assert re.search(r"\[[^]]*GET writes[^]]*\]\(\S+GET~writes\S*\)", md)  # acronyms keep their case
+    assert f"Replying to >>{tid}" in md
+    r = press(client, r, "p.agree-because")
+    r = key(client, r, "prefetching~crawlers")
+    r = key(client, r, "w.break")
+    r = key(client, r, "GET~writes")
+    r = press(client, r, "period")
+    assert f"&gt;&gt;{tid} I agree because prefetching crawlers break GET writes." in r.text
+    r = press(client, r, "undo")
+    r = press(client, r, "undo")
+    assert "crawlers break</pre>" in r.text.replace("\n", "")
+    r = go(client, link(r, r"/send$"))
+    assert find(client, f"I agree because prefetching crawlers break")
+
+
+def test_keyboard_quote_phrase_and_codes(client, uniq):
+    code = "code-" + uniq + "9"
+    r = client.get("/compose/b/lounge")
+    r = press(client, r, "p.hi-all")
+    assert "Hi all," in r.text
+    r = key(client, r, "w." + code)  # identifiers keep their case and are never capitalized
+    r = press(client, r, "f.name")
+    r = type_word(client, r, "fetch")
+    r = press(client, r, "hyph")
+    r = press(client, r, "c.q")
+    r = press(client, r, "f.body")
+    r = go(client, link(r, r"/send$"))
+    p = find(client, code)
+    assert p[0]["body"] == f"Hi all, {code}" and p[0]["author"].startswith("fetch-q !")
+    # the receipt's signed reply link: codes from earlier posts and the reply starters are one key
+    t = go(client, link(r, r"/as/[a-z2-7]{12}/compose/\d+/\d+$"))
+    q = int(re.search(r"/compose/\d+/(\d+)$", link(r, r"/as/[a-z2-7]{12}/compose/\d+/\d+$")).group(1))
+    assert "Codes and names from your earlier posts:" in t.text
+    t = press(client, t, "p.good-question")
+    t = press(client, t, code)
+    t = press(client, t, "period")
+    go(client, link(t, r"/send$"))
+    assert find(client, f">>{q} Good question. {code}.")
+    # a draft that does not quote yet offers "I agree with >>N because"
+    t = client.get(f"/compose/{p[0]['id']}")
+    assert link(t, rf"/p\.agree-with\.{p[0]['id']}$")
+    t = press(client, t, f"p.agree-with.{p[0]['id']}")
+    assert f"I agree with &gt;&gt;{p[0]['id']} because" in t.text
+
+
+def test_keyboard_sign_as_and_letters(client, uniq):
+    r = client.get("/compose/b/lounge")
+    r = type_word(client, r, "hello")
+    r = press(client, r, "f.name")
+    r = press(client, r, "c.z")
+    r = press(client, r, "c.q")
+    r = press(client, r, "hyph")
+    r = press(client, r, "c.k")  # the name view keeps its letter keys
+    r = press(client, r, "f.body")
+    r = key(client, r, "w." + uniq)
+    go(client, link(r, r"/send$"))
+    # a new draft from the same address offers that name as one key
+    r = client.get("/compose/b/lounge")
+    r = press(client, r, "n.zq-k")
+    assert "author: zq-k" in r.text
+    r = press(client, r, "undo")
+    assert "author: Anonymous" in r.text
+    r = press(client, r, "n.zq-k")
+    # letters typed one by one are never capitalized, and '-' after a completion stays on the letter page
+    r = go(client, link(r, r"/k/\w+/chars$"))
+    r = press(client, r, "c.n")
+    r = press(client, r, "c.o")
+    r = press(client, r, "x.nonce")
+    r = press(client, r, "hyph")
+    assert link(r, r"/k/\w+/\d+/c\.a$") and "Letters:" in r.text
+    r = press(client, r, "c.7")
+    r = press(client, r, "c.x")
+    r = go(client, link(r, r"/send$"))
+    p = find(client, "nonce-7x")
+    assert p and p[-1]["body"].startswith("nonce-7x") and p[-1]["author"].startswith("zq-k")
+
+
+def test_keyboard_page_size_with_long_root(client, monkeypatch):
+    monkeypatch.setattr(config, "PUBLIC_URL", "https://agentchan.example-board.xyz")
+    for start in ("/compose/b/general", "/compose/1/2"):
+        r = client.get(start)
+        md = client.get(link(r, r"/k/\w+$").replace("https://agentchan.example-board.xyz", ""),
+                        headers={"Accept": "text/markdown"}).text
+        assert len(md.encode()) < 9000, len(md)
+        assert md.index("SEND") < 1500 and md.index("Next word:") < 2500
+        for _, u in anchors(r):
+            assert len(u) <= 200, u
+
+
+def test_keyboard_model_units():
+    m = kb.Bigrams()
+    m.add("The AI agents use tools. AI agents read posts. I think rate limits matter. "
+          "I think rate limits help. I think rate limits work. nonce-ab12 here.", "eval-bot")
+    assert m.display("ai") == "AI" and m.display("think") == "think"
+    assert "nonce-ab12" in m.uni and m.chain("think", "rate") == ["rate", "limits"]
+    assert m.name_words("eval", 3)[0] == "bot" and "claude" in m.name_words("", 30)
+    ph, ws = kb.context_terms(["Plain GET writes are risky for prefetchers & crawlers. nonce-zz99"])
+    assert ["GET", "writes"] in ph or any("GET" in p for p in ph)
+    assert "GET" in ws and "nonce-zz99" not in ws  # other people's codes are not offered
+    assert kb.apply("Hi.", "here~is~nonce-ab12", "")[0] == "Hi. Here is nonce-ab12"
+    assert kb.apply("", "nonce-ab12", "")[0] == "nonce-ab12"
+    assert kb.apply(">>3", "p.agree-with.3", "")[0] == ">>3 I agree with >>3 because"
+    assert kb.apply("", "p.agree-with", "")[0] is None
+    assert kb.apply("", "c.n", "")[0] == "n"
