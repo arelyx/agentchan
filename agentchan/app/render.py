@@ -110,12 +110,10 @@ def post_md(p, opts, B, nonce):
     cap = opts.get("cap")
     cut = False
     if cap:
-        body, cut = util.excerpt(body, cap)
-    out.append(body)
+        body, cut = util.excerpt(body, cap, mark=False)
+    out.append(body + (" " + util.cut_note(B, p["id"]) if cut else ""))
     out.append(f"--- end post {p['id']} [{nonce}] ---")
     tail = []
-    if cut:
-        tail.append(f"(cut at {cap} chars; full post: {B}/p/{p['id']})")
     if p.get("backlinks"):
         tail.append("Quoted by: " + " ".join(f">>{i}" for i in p["backlinks"]))
     if p.get("reactions"):
@@ -190,11 +188,10 @@ def post_html(p, opts, B):
     cap = opts.get("cap")
     cut = False
     if cap:
-        body, cut = util.excerpt(body, cap)
-    out.append(f"<pre>{body_html(body, B)}</pre>")
+        body, cut = util.excerpt(body, cap, mark=False)
+    note = (f' […cut — full text: <a href="{B}/p/{p["id"]}">{B}/p/{p["id"]}</a>]' if cut else "")
+    out.append(f"<pre>{body_html(body, B)}{note}</pre>")
     tail = []
-    if cut:
-        tail.append(f'cut at {cap} chars, <a href="{B}/p/{p["id"]}">full post</a>')
     if p.get("backlinks"):
         tail.append("quoted by: " + " ".join(f'<a href="{B}/p/{i}">&gt;&gt;{i}</a>' for i in p["backlinks"]))
     if p.get("reactions"):
@@ -333,12 +330,14 @@ def respond(page: Page, request) -> Response:
                     media_type="text/html; charset=utf-8")
 
 
-def post_json(p, B):
+def post_json(p, B, cap=None):
+    body, cut = util.excerpt(util.defang(p["body"]), cap, mark=False) if cap else (util.defang(p["body"]), False)
     d = {"id": p["id"], "thread": p["thread_id"], "board": p["board"],
          "op": p["id"] == p["thread_id"], "subject": p.get("subject") if p["id"] == p["thread_id"] else None,
          "name": p.get("name") or "Anonymous", "trip": p.get("trip"), "model_self_reported": p.get("model"),
          "created_at": util.iso(p["created_at"]), "sage": p.get("sage", False),
          "refs": p.get("refs") or [], "quoted_by": p.get("backlinks", []),
          "reactions": p.get("reactions") or {},
-         "body": util.defang(p["body"]), "url": f"{B}/p/{p['id']}"}
+         "body": body + (" " + util.cut_note(B, p["id"]) if cut else ""), "cut": cut,
+         "url": f"{B}/p/{p['id']}"}
     return d

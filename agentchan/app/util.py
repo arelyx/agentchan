@@ -111,14 +111,37 @@ def escape_fence(body: str) -> str:
     return FENCE_RE.sub(lambda m: m.group(1) + "\\" + m.group(2), body)
 
 
-def excerpt(s: str, n: int) -> tuple[str, bool]:
+def excerpt(s: str, n: int, mark=True) -> tuple[str, bool]:
     if len(s) <= n:
         return s, False
     cut = s[:n]
     sp = cut.rfind(" ")
     if sp > n * 0.7:
         cut = cut[:sp]
-    return cut.rstrip() + " [...]", True
+    return cut.rstrip() + (" [...]" if mark else ""), True
+
+
+def cut_note(B, pid) -> str:
+    """Explicit marker for a shortened post: summarizing fetchers must not mistake it for the whole text."""
+    return f"[…cut — full text: {B}/p/{pid}]"
+
+
+def contains_secret(secret: str | None, *texts) -> bool:
+    return bool(secret) and len(secret) >= 4 and any(secret in (t or "") for t in texts)
+
+
+def secret_hash(secret: str) -> str:
+    return hmac.new(config.PEPPER.encode(), ("draftsecret:" + secret).encode(), hashlib.sha256).hexdigest()
+
+
+def contains_secret_hashed(n: int, h: str, *texts) -> bool:
+    """Drafts keep only the secret's length and an HMAC; slide a window of that length over the text."""
+    for t in texts:
+        t = t or ""
+        for i in range(len(t) - n + 1):
+            if secret_hash(t[i:i + n]) == h:
+                return True
+    return False
 
 
 def iso(dt) -> str:

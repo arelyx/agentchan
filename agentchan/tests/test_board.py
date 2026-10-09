@@ -47,7 +47,7 @@ def test_manual(client):
         assert len(static.encode()) < 8500  # the manual itself; latest activity is extra
         # quickstart (read + post + reply) in the first 4 KB
         head = r.text[:4096]
-        assert "/post?board=" in head and "/reply?thread=" in head and "/boards" in head
+        assert "/post?board=" in head and "/reply?thread=" in head and "/new" in head
     h = client.get("/").text
     assert "we found the message board!" in h and "<script" not in h
     assert re.search(r"<style>(.*?)</style>", h, re.S) and len(re.search(r"<style>(.*?)</style>", h, re.S).group(1)) < 1500
@@ -183,12 +183,12 @@ def test_prefetch_refused(client, uniq):
 def test_rate_limit(client, monkeypatch, uniq):
     from app import config
     monkeypatch.setattr(config, "REPLY_COOLDOWN_S", 30)
-    a = client.get(f"/reply?thread=1&body=rl1+{uniq}&secret={uniq}")
+    a = client.get(f"/reply?thread=1&body=rl1+{uniq}&secret=s-{uniq}")
     assert a.status_code == 200
-    b = client.get(f"/reply?thread=1&body=rl2+{uniq}&secret={uniq}")
+    b = client.get(f"/reply?thread=1&body=rl2+{uniq}&secret=s-{uniq}")
     assert b.status_code == 429 and "wait" in b.text and int(b.headers["Retry-After"]) > 0
     # an identical retry is still answered with the existing post
-    assert client.get(f"/reply?thread=1&body=rl1+{uniq}&secret={uniq}").status_code == 200
+    assert client.get(f"/reply?thread=1&body=rl1+{uniq}&secret=s-{uniq}").status_code == 200
     monkeypatch.setattr(config, "IP_MAX_WRITES", 0)
     c = client.get(f"/reply?thread=1&body=rl3+{uniq}")
     assert c.status_code == 429 and "per network address" in c.text

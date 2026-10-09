@@ -270,3 +270,61 @@ def test_keyboard_receipt_offers_signed_replies(client, uniq):
     r = go(client, link(r, r"/send$"))
     u = link(r, r"/as/[a-z2-7]{12}/compose/\d+/\d+$")
     assert "author: fetch !" in go(client, u).text
+
+
+# ------------------------------------------------------------------ round 2: secrets, excerpts, board pages
+def test_secret_in_post_rejected(client, uniq):
+    s = "hunter2-" + uniq
+    for url in (f"/post?board=general&subject=x+{uniq}&body=my+secret+is+{s}&secret={s}",
+                f"/post?board=general&subject={s}&body=body+{uniq}&secret={s}",
+                f"/reply?thread=1&body=hi+{uniq}&name={s}&secret={s}",
+                f"/reply?thread=1&body=preview+{s}&secret={s}&preview=1"):
+        r = client.get(url)
+        assert r.status_code == 400 and "contains your secret; nothing was posted" in r.text, url
+    r = client.post("/api/v1/replies", json={"thread": 1, "body": f"api {s}", "secret": s})
+    assert r.status_code == 400 and r.json()["error"] == "secret in post"
+    res = client.post("/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {
+        "name": "reply", "arguments": {"thread": 1, "body": f"mcp {s}", "secret": s}}}).json()["result"]
+    assert res["isError"] and "contains your secret" in res["content"][0]["text"]
+    # draft: the secret arrives in a later piece; caught at send time
+    d = client.get(f"/reply.json?thread=1&body=part+one+{uniq}+&secret={s}&more=1").json()
+    client.get(f"/draft/{d['draft']}/add?text={s}&part=2")
+    r = client.get(f"/draft/{d['draft']}/send")
+    assert r.status_code == 400 and "contains your secret" in r.text
+    assert not find(client, s)
+    # short secrets and secrets elsewhere are fine
+    assert client.get(f"/reply.json?thread=1&body=abc+fine+{uniq}&secret=abc").json()["ok"]
+    assert client.get(f"/reply.json?thread=1&body=Hunter2-{uniq[1:]}&secret={s}").json()["ok"]
+
+
+def test_excerpts_marked_and_full_text_on_post_page(client, uniq):
+    long = ("word " * 600 + "END" + uniq).strip()
+    j = client.get("/post.json", params={"board": "lounge", "subject": f"long {uniq}", "body": long}).json()
+    pid = j["id"]
+    note = f"[…cut — full text: {H}/p/{pid}]"
+    for path in ("/b/lounge.md", f"/new.md?since={pid - 1}", "/AGENTS.md", f"/search.md?q=END{uniq}"):
+        t = client.get(path).text
+        assert note in t, path
+        assert "Excerpts here are shortened; open /p/<number> for the full text." in t, path
+    assert note in client.get("/b/lounge").text.replace("<a href=\"" + H + f"/p/{pid}\">", "").replace("</a>]", "]")
+    bj = client.get("/b/lounge.json").json()
+    op = [t for t in bj["threads"] if t["id"] == pid][0]["op"]
+    assert op["cut"] and op["body"].endswith(note)
+    assert client.get(f"/p/{pid}.json").json()["post"]["body"] == long
+    assert f"END{uniq}" in client.get(f"/p/{pid}.md").text
+
+
+def test_board_page_authors_and_size(client, uniq, monkeypatch):
+    big = "x" * 3980
+    for i in range(12):
+        tid = client.get("/post.json", params={"board": "random", "subject": f"big {i} {uniq}", "name": f"op{i}",
+                                               "secret": f"sec{i}{uniq}", "body": big}).json()["id"]
+        for k in range(3):
+            client.get("/reply.json", params={"thread": tid, "name": f"r{k}", "body": f"{k}{uniq}" + big})
+    t = client.get("/b/random.md").text
+    assert len(t.encode()) < 20_500
+    assert "| op11 !" in t and "| r2 ---" in t
+    h = client.get("/b/random").text
+    assert "op11 !" in h and len(h.encode()) < 32_000
+    j = client.get("/b/random.json")
+    assert len(j.content) < 32_000 and j.json()["threads"][0]["last_replies"][0]["name"].startswith("r")

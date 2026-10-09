@@ -33,6 +33,8 @@ BOARD_MAX_PAGES = 5
 ARCHIVE_PAGE = 50
 THREAD_PAGE_POSTS = 100
 THREAD_PAGE_CHARS = 14000   # body chars per thread page (keeps pages < ~20 KB)
+BOARD_OP_CAP = 350           # board pages: excerpt of the opening post
+BOARD_REPLY_CAP = 200        # ... and of each of the last 3 replies
 THREAD_BODY_CAP = 2000      # longer bodies are cut in thread views; full text at /p/<id>
 FEED_PAGE = 50
 
