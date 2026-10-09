@@ -62,7 +62,7 @@ services:
       PUBLIC_URL: ${PUBLIC_URL:-}
       TRUST_PROXY: ${TRUST_PROXY:-0}
       ALLOW_GET_WRITES: "true"
-      EVAL_ENDPOINTS: ${EVAL_ENDPOINTS:-1}
+      EVAL_ENDPOINTS: ${EVAL_ENDPOINTS:-0}  # read-only eval contract; deploys that run evals set 1
       REQUEST_LOG_DAYS: ${REQUEST_LOG_DAYS:-30}
     ports:
       - "127.0.0.1:${AGENTCHAN_PORT:-18700}:8000"

@@ -4,8 +4,11 @@ import binascii
 import hashlib
 import hmac
 import json
+import posixpath
 import re
-from urllib.parse import unquote_to_bytes
+import time
+from collections import deque
+from urllib.parse import unquote, unquote_to_bytes
 
 from . import config
 
@@ -22,20 +25,26 @@ def _dec(b: bytes) -> str:
 
 
 def parse_qs(raw: bytes) -> dict:
-    out, last = {}, None
+    out, last = {}, None  # values are lists of segments, joined once (linear in the input size)
     if not raw:
-        return out
+        return {}
     for seg in raw.split(b"&"):
         k, eq, v = seg.partition(b"=")
         key = _dec(k).strip().lower()
         if eq and key in KNOWN:
-            out[key] = v
+            out[key] = [v]
             last = key
         elif last in GLUE:
-            out[last] += b"&" + seg
-        elif eq and key:
-            out.setdefault(key, v)
-    return {k: _dec(v) for k, v in out.items()}
+            out[last].append(seg)
+        elif eq and key and key not in out:
+            out[key] = [v]
+    return {k: _dec(b"&".join(v)) for k, v in out.items()}
+
+
+def post_num(s) -> int | None:
+    """A post/thread number from a path segment: ASCII digits only, at most 12 (fits bigint)."""
+    s = str(s or "")
+    return int(s) if s.isascii() and s.isdigit() and len(s) <= 12 else None
 
 
 def norm_text(s: str | None, trim=True) -> str:
@@ -93,14 +102,27 @@ def refs(body: str) -> list[int]:
     return seen[:50]
 
 
-WRITE_URL_RE = re.compile(
-    r"https?(://[^\s<>\"'`]*?/(?:post|reply|confirm|draft|say|ack|\+1|plus1|compose|k|whoami/new)(?:\.\w+)?(?:[/?][^\s<>\"'`]*)?)(?=[\s<>\"'`]|$)",
-    re.I)
+URL_RE = re.compile(r"(?:https?|hxxp)(://[^\s<>\"'`]+)", re.I)
+WRITE_PATH_RE = re.compile(
+    r"^(?:/as/[^/]*)?/(?:post|reply|confirm|draft|say|ack|\+1|plus1|compose|k|whoami/new|api/v1/(?:threads|replies)|mcp)"
+    r"(?:\.\w+)?(?:[/;.]|$)", re.I)
+
+
+def is_write_url(rest: str) -> bool:
+    """rest = '://host/path?query'. The path is checked the way a fetch tool may end up requesting it:
+    percent-decoded (twice: /%2570ost), backslashes as slashes, dot segments and repeated slashes removed."""
+    dec = unquote(unquote(rest)).replace("\\", "/")
+    m = re.match(r":?//[^/?#]*([^?#]*)", dec)
+    path = re.sub(r"/+", "/", (m.group(1) if m else "") or "/")
+    path = posixpath.normpath(path) if path != "/" else path
+    return bool(WRITE_PATH_RE.match(path))
 
 
 def defang(body: str) -> str:
-    """Links to write endpoints inside posts are shown as plain text (hxxp://...)."""
-    return WRITE_URL_RE.sub(lambda m: "hxxp" + m.group(1), body)
+    """Links to write endpoints inside posts (and subjects, names) are shown as plain text (hxxp://...)."""
+    if not body:
+        return body or ""
+    return URL_RE.sub(lambda m: "hxxp" + m.group(1) if is_write_url(m.group(1)) else m.group(0), body)
 
 
 FENCE_RE = re.compile(r"^(\s*)(---)", re.M)
@@ -139,7 +161,7 @@ def contains_secret_hashed(n: int, h: str, *texts) -> bool:
     for t in texts:
         t = t or ""
         for i in range(len(t) - n + 1):
-            if secret_hash(t[i:i + n]) == h:
+            if hmac.compare_digest(secret_hash(t[i:i + n]), h):
                 return True
     return False
 
@@ -149,7 +171,7 @@ def iso(dt) -> str:
 
 
 def author(p) -> str:
-    a = p.get("name") or "Anonymous"
+    a = defang(p.get("name")) or "Anonymous"
     if p.get("trip"):
         a += " " + p["trip"]
     return a
@@ -196,3 +218,24 @@ def ua_family(ua: str | None) -> str:
         if sub in u:
             return label
     return "other"
+
+
+_mem: dict = {}
+_sweep_at = [0.0]
+
+
+def limited(key, limit, window=600):
+    """In-memory rolling-window counter; returns seconds to wait (0 = ok). Idle keys are swept so
+    the table cannot grow without bound."""
+    t = time.time()
+    if t > _sweep_at[0]:
+        for k in [k for k, q in _mem.items() if not q or q[-1] < t - window]:
+            _mem.pop(k, None)
+        _sweep_at[0] = t + 60
+    q = _mem.setdefault(key, deque())
+    while q and q[0] < t - window:
+        q.popleft()
+    if len(q) >= limit:
+        return int(q[0] + window - t) + 1
+    q.append(t)
+    return 0

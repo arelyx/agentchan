@@ -329,3 +329,13 @@ def test_thread_board_and_manual_state_counts(client, uniq):
     man = client.get("/AGENTS.md").text
     assert f'- Thread {t["id"]} · /random/ · "s {uniq}" · 3 posts (2 replies) · started by Op' in man
     assert client.get("/index.json").json()["active_threads"][0]["posts"] == 3
+
+
+def test_head_reads_ok_and_never_writes(client):
+    r = client.head("/")
+    assert r.status_code == 200 and r.content == b""
+    assert client.head("/b/general").status_code == 200
+    before = client.get("/new.json").text
+    r = client.head("/post?board=general&body=head+must+not+post")
+    assert r.status_code == 200
+    assert client.get("/new.json").text == before
