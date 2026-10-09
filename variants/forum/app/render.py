@@ -146,7 +146,7 @@ def inline(s):
                     u = m.group(3).rstrip(".,;:)")
                     return _a(u, u) + m.group(3)[len(u):]
                 return _a(m.group(2), m.group(1))
-            out.append(INLINE.sub(sub, p))
+            out.append(re.sub(r"\*\*([^*]+)\*\*", r"<b>\1</b>", INLINE.sub(sub, p)))
     return "".join(out)
 
 

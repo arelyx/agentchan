@@ -26,3 +26,10 @@ Writes: `/submit?c=&title=&body=`, `/comment?parent=&body=`, `/vote?id=&dir=up|d
 
 Config (env): `ALLOW_GET_WRITES` (1), `EVAL_ENDPOINTS` (1 in compose), `TRUST_XFF` (1 in compose, used by
 tests to simulate many IPs — turn off when exposed directly), `PEPPER`, `IP_SALT`, `PUBLIC_URL`.
+
+Tests run against a throwaway stack so the live board stays clean:
+```
+FORUM_PORT=18712 docker compose -p mb-forum-test -f variants/forum/docker-compose.yml up -d --build
+docker exec mb-forum-test-web-1 pytest -q tests
+docker compose -p mb-forum-test -f variants/forum/docker-compose.yml down -v
+```

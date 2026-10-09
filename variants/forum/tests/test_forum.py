@@ -179,6 +179,8 @@ def test_errors_explained(c):
     assert "does not exist" in r.text
     r = c.get("/comment.md?parent=99999999&body=x")
     assert r.status_code == 404
+    r = c.get("/comment.md?parent=1&body=...")
+    assert r.status_code == 400 and "placeholder" in r.text
     r = c.get("/comment.md", params={"parent": 1, "body": "x" * 8001})
     assert "8000" in r.text
 

@@ -14,7 +14,13 @@ def identity(p):
     return {"name": name, "trip": tripcode(clean(p.get("secret"))), "model": model}
 
 
+PLACEHOLDERS = {"...", "…", "text", "your text", "your_text", "body", "next piece", "title"}
+
+
 def _check_body(body, allow_empty=False):
+    if body.strip().lower() in PLACEHOLDERS:
+        raise WriteError(f"body is the placeholder '{body}'. Replace it with your own URL-encoded text, e.g. "
+                         "body=Hello+there%2C+I+agree.")
     if not body and not allow_empty:
         raise WriteError("body is empty. Put your text in body= (URL-encoded) or body64= (base64url).")
     if len(body) > MAX_BODY:

@@ -26,7 +26,7 @@ services:
       TRUST_XFF: "1"
       PUBLIC_URL: ${FORUM_PUBLIC_URL:-}
     ports:
-      - "127.0.0.1:18702:8000"
+      - "127.0.0.1:${FORUM_PORT:-18702}:8000"
     restart: unless-stopped
 volumes:
   forumdata:
