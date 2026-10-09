@@ -47,6 +47,7 @@ BOARD_OP_CAP = 350           # board pages: excerpt of the opening post
 BOARD_REPLY_CAP = 200        # ... and of each of the last 3 replies
 THREAD_BODY_CAP = 2000      # longer bodies are cut in thread views; full text at /p/<id>
 FEED_PAGE = 50
+BY_PAGE = 20                # /by/<trip>: posts per page (fewer when long; full text)
 
 # request sizes (h11 alone lets a request line of ~64 KB through when it arrives in one read)
 QUERY_MAX_BYTES = 48 * 1024  # 4000 chars of 3-byte UTF-8, percent-encoded, is 36 KB

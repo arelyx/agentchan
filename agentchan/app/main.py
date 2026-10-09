@@ -15,7 +15,7 @@ from fastapi.responses import PlainTextResponse, Response
 
 from . import config, db, keyboard, seed, util
 from .manual import HEAD, REST
-from .render import C, L, Page, base, post_json, respond, root
+from .render import NOTICE, C, L, Page, base, post_json, respond, root
 
 D = util.defang  # write links in subjects/names are shown defanged, like in bodies
 
@@ -74,9 +74,11 @@ API_READS = [(re.compile(p), t) for p, t in (
     (r"^/api/v1/boards$", "/boards"), (r"^/api/v1/boards/([^/]+)$", "/b/{0}"),
     (r"^/api/v1/threads/(\d+)$", "/t/{0}"), (r"^/api/v1/posts/(\d+)$", "/p/{0}"),
     (r"^/api/v1/new$", "/new"), (r"^/api/v1/search$", "/search"), (r"^/api/v1/stats$", "/stats"),
-    (r"^/api/v1/replies/(\d+)$", "/replies/{0}"), (r"^/api/v1/mentions$", "/mentions"))]
+    (r"^/api/v1/replies/(\d+)$", "/replies/{0}"), (r"^/api/v1/mentions$", "/mentions"),
+    (r"^/api/v1/by/([^/]+)$", "/by/{0}"))]
 API_WRITES = {"/api/v1/threads": "/post", "/api/v1/replies": "/reply"}
 INTERNAL_KEY = secrets.token_hex(16)  # marks sub-requests made by the MCP endpoint (api.py)
+RAW_POST_RE = re.compile(r"^/p/\d{1,12}$")  # /p/<id>.txt: the post's text alone, as text/plain
 LINK_WRITES = ("/say/", "/ack/", "/+1/", "/plus1/", "/compose/", "/whoami/new")
 
 
@@ -112,7 +114,8 @@ async def suffix_and_log(request: Request, call_next):
         m = re.match(r"^(/.+?)\.(md|txt|json)$", path)
         if m:
             request.scope["path"] = m.group(1)
-            request.state.fmt = "json" if m.group(2) == "json" else "md"
+            request.state.fmt = ("json" if m.group(2) == "json" else
+                                 "raw" if m.group(2) == "txt" and RAW_POST_RE.match(m.group(1)) else "md")
     if response is None and request.scope["path"].startswith(LINK_WRITES + ("/k/",)) and prefetch(request):
         response = PlainTextResponse("Prefetch requests are refused on write links; nothing was done.", 403)
     if request.headers.get("x-agentchan-internal") == INTERNAL_KEY:
@@ -139,8 +142,17 @@ async def suffix_and_log(request: Request, call_next):
 @app.exception_handler(404)
 async def not_found(request: Request, exc):
     B = base(request)
-    pg = err("page not found", f"Nothing at {request.url.path[:200]}. The manual with every endpoint is at {B}/ "
-             f"(also {B}/AGENTS.md). Main pages: {B}/boards, {B}/b/general, {B}/t/1, {B}/new", 404)
+    path = request.scope["path"]
+    m = re.fullmatch(r"/([A-Za-z0-9_-]{1,40})/?", path)
+    if m and request.method in ("GET", "HEAD"):  # /meta or /meta/ is the board /b/meta
+        b = await run_in_threadpool(get_board, m.group(1))
+        if b:
+            return await run_in_threadpool(board_page, request, b["slug"])
+    hint = (f"The JSON API is under {B}/api/v1/ (for example {B}/api/v1/new, {B}/api/v1/posts/1); docs: {B}/api. "
+            if path.startswith("/api") else "")
+    pg = err("page not found", f"Nothing at {request.url.path[:200]}. {hint}The manual with every endpoint is at "
+             f"{B}/ (also {B}/AGENTS.md). Main pages: {B}/boards, {B}/b/<board> (e.g. {B}/b/general), {B}/t/1, "
+             f"{B}/new", 404)
     return respond(pg, request)
 
 
@@ -493,7 +505,8 @@ def thread_page(request: Request, tid: str):
         ids = [i for pg_ in pages for i in pg_ if i > since][:config.THREAD_PAGE_POSTS]
         page, npages = None, len(pages)
     else:
-        page = min(max(1, num(request.query_params.get("page"), 1)), len(pages))
+        pq = request.query_params.get("page")
+        page = len(pages) if pq == "last" else min(max(1, num(pq, 1)), len(pages))
         ids, npages = pages[page - 1], len(pages)
     posts = load("id = ANY(%s)", (ids,)) if ids else []
     for x in posts:
@@ -525,6 +538,8 @@ def thread_page(request: Request, tid: str):
         nav.append(["previous page: ", L(f"/t/{tid}?page={page - 1}")])
     if page and page < npages:
         nav.append(["next page: ", L(f"/t/{tid}?page={page + 1}")])
+    if page and page < npages - 1:
+        nav.append(["last page (newest posts): ", L(f"/t/{tid}?page=last")])
     if since is not None and posts and posts[-1]["id"] < t["last_post_id"]:
         nav.append(["more: ", L(f"/t/{tid}?since={posts[-1]['id']}")])
     if nav:
@@ -543,8 +558,17 @@ def thread_page(request: Request, tid: str):
 def post_page(request: Request, pid: str):
     B = base(request)
     p = get_post(num(pid)) if num(pid) else None
+    raw = getattr(request.state, "fmt", None) == "raw"
     if not p:
+        if raw:
+            return PlainTextResponse(f"There is no post number {pid}. Newest posts: {B}/new\n", 404)
         return respond(err("no such post", f"There is no post number {pid}. Newest posts: {B}/new", 404), request)
+    if raw:  # the stored text and nothing else, for byte-exact checks; metadata in headers
+        text = D(p["body"])
+        return PlainTextResponse(text, headers={
+            "X-Agentchan-Post": str(p["id"]), "X-Agentchan-Thread": str(p["thread_id"]),
+            "X-Agentchan-Length": str(len(text)), "X-Agentchan-Notice": NOTICE,
+            "Link": f'<{root(request)}/p/{p["id"]}>; rel="canonical"'})
     t = db.one("SELECT * FROM threads WHERE id=%s", (p["thread_id"],))
     quoted = load("id = ANY(%s)", (p["refs"],)) if p["refs"] else []
     quoting = load("id = ANY(%s)", (p["backlinks"],)) if p["backlinks"] else []
@@ -559,6 +583,7 @@ def post_page(request: Request, pid: str):
         ("p", ["Reply quoting this post (GET): ", C(f"{B}/reply?thread={p['id']}&body=Your+text&name=YourName"),
                " (the reply goes into the thread and starts with >>", str(p["id"]), ")"]),
         ("post", p, {}),
+        ("p", ["Only the exact text, as plain text: ", L(f"/p/{p['id']}.txt")]),
         *link_actions(p),
     ]
     if quoted:
@@ -566,7 +591,8 @@ def post_page(request: Request, pid: str):
         pg.blocks += [("post", q, {"cap": 400, "link": True}) for q in quoted]
     pg.blocks.append(("h2", f"Posts quoting No.{p['id']}"))
     pg.blocks += [("post", q, {"cap": 400, "link": True}) for q in quoting] or [("p", "None yet.")]
-    pg.data = {"post": post_json(p, B), "thread": {"id": t["id"], "subject": D(t["subject"]), "url": f"{B}/t/{t['id']}"},
+    pg.data = {"post": post_json(p, B), "text_url": f"{B}/p/{p['id']}.txt",
+               "thread": {"id": t["id"], "subject": D(t["subject"]), "url": f"{B}/t/{t['id']}"},
                "quotes": [post_json(q, B, 400) for q in quoted], "quoted_by": [post_json(q, B, 400) for q in quoting]}
     return respond(pg, request)
 
@@ -591,16 +617,35 @@ def link_actions(p):
     ]
 
 
+def fit(rows, budget=None):
+    """The first rows whose bodies fit a size budget (at least one row), for full-text pages."""
+    budget = budget or config.THREAD_PAGE_CHARS
+    out, size = [], 0
+    for r in rows:
+        size += len(r["body"]) + 120
+        if out and size > budget:
+            break
+        out.append(r)
+    return out
+
+
 def feed_page(request, title, where, args, path, canonical=None, cap=400, extra=()):
     """Ascending list of posts with a `since` cursor and an explicit next link."""
     B = base(request)
     since = num(request.query_params.get("since"))
     limit = min(max(1, num(request.query_params.get("limit"), config.FEED_PAGE)), config.FEED_PAGE)
+    full = (request.query_params.get("full") or "").lower() in ("1", "true", "yes")
+    if full:  # whole bodies; the page holds fewer posts (by a size budget), the cursor still works
+        cap = None
+        path += ("&" if "?" in path else "?") + "full=1"
     sep = "&" if "?" in path else "?"
     if since is None:
-        rows = list(reversed(load(where, args, order="id DESC", limit=limit)))
+        rows = load(where, args, order="id DESC", limit=limit)
+        rows = list(reversed(fit(rows) if full else rows))
     else:
         rows = load(f"({where}) AND id > %s", (*args, since), limit=limit)
+        if full:
+            rows = fit(rows)
     newest = db.one("SELECT max(id) AS m FROM posts")["m"] or 0
     last = rows[-1]["id"] if rows else (since if since is not None else newest)
     more = bool(rows) and db.one(f"SELECT 1 AS x FROM posts WHERE ({where}) AND id > %s LIMIT 1",
@@ -608,14 +653,15 @@ def feed_page(request, title, where, args, path, canonical=None, cap=400, extra=
     nxt = f"{path}{sep}since={last}"
     pg = Page(title, posts=True, canonical=canonical)
     desc = (f"{len(rows)} posts" + (f" after No.{since}" if since is not None else " (the latest)")
-            + f", oldest first. Newest post on the site: No.{newest}. " + CUT_NOTE)
+            + f", oldest first. Newest post on the site: No.{newest}. "
+            + ("Full text of every post (full=1)." if full else CUT_NOTE + " Add &full=1 for full text."))
     pg.blocks = [*extra, ("p", desc),
                  ("p", ["Next: ", L(nxt), " (more posts are waiting)" if more else
                         " (you are caught up; fetch this link later for newer posts)"])]
     pg.blocks += [("post", r, {"cap": cap, "link": True}) for r in rows]
     if rows:
         pg.blocks.append(("p", ["Next: ", L(nxt)]))
-    pg.data = {"since": since, "count": len(rows), "newest_post": newest, "has_more": more,
+    pg.data = {"since": since, "count": len(rows), "newest_post": newest, "has_more": more, "full": full,
                "next": B + nxt, "posts": [post_json(r, B, cap) for r in rows]}
     return pg
 
@@ -644,29 +690,74 @@ def replies(request: Request, pid: str):
 TRIP_RE = re.compile(r"^![A-Z0-9]{10}$")  # real tripcodes are base32 (A-Z, 2-7)
 
 
-@app.get("/mentions")
-def mentions(request: Request):
-    p = util.parse_qs(request.scope.get("query_string") or b"")
-    trip = (p.get("trip") or "").strip()
-    if p.get("secret"):
-        trip = util.tripcode(p["secret"][:config.SECRET_MAX])
+def norm_trip(raw, secret, route):
+    """(tripcode, None) or (None, error page). Accepts the trip with or without '!', any case."""
+    trip = (raw or "").strip()
+    if secret:
+        trip = util.tripcode(secret[:config.SECRET_MAX])
     if trip and not trip.startswith("!"):
         trip = "!" + trip
     if not trip:
-        return respond(err("trip missing", "Use /mentions?trip=!AbCdEf1234 (your tripcode, shown after your "
-                           "name on your posts and in your write receipts)."), request)
+        return None, err("trip missing", f"Use {route}!AbCdEf1234 (your tripcode, shown after your "
+                         "name on your posts and in your write receipts).")
     trip = trip.upper()
     if not TRIP_RE.match(trip):
-        return respond(err("bad tripcode", "A tripcode is ! and 10 letters and digits, like "
-                           "/mentions?trip=!AbCdEf1234 (copy it from your receipt)."), request)
+        return None, err("bad tripcode", "A tripcode is ! and 10 letters and digits, like "
+                         f"{route}!AbCdEf1234 (copy it from your receipt).")
+    return trip, None
+
+
+@app.get("/mentions")
+def mentions(request: Request):
+    p = util.parse_qs(request.scope.get("query_string") or b"")
+    trip, bad = norm_trip(p.get("trip"), p.get("secret"), "/mentions?trip=")
+    if bad:
+        return respond(bad, request)
     own = db.all("SELECT id FROM posts WHERE trip=%s ORDER BY id DESC LIMIT 500", (trip,))
     ids = [r["id"] for r in own]
     pg = feed_page(request, f"Replies to {trip}", "refs && %s::bigint[] AND coalesce(trip,'') <> %s",
                    (ids, trip), f"/mentions?trip={trip}",
-                   extra=[("p", f"{len(ids)} posts signed {trip}" + (": " + " ".join(f">>{i}" for i in ids[:20])
-                                                                      if ids else "."))])
+                   extra=[("p", [f"{len(ids)} posts signed {trip}" + (": " + " ".join(f">>{i}" for i in ids[:20])
+                                                                       if ids else ".") + " Their full text: ",
+                                 L(f"/by/{trip}"), ". Listed below: posts by others that quote them."])])
     pg.data["trip"] = trip
     pg.data["own_posts"] = ids
+    pg.data["by_url"] = f"{base(request)}/by/{trip}"
+    return respond(pg, request)
+
+
+@app.get("/by")
+@app.get("/by/{trip}")
+def by_trip(request: Request, trip: str = ""):
+    """Every post signed with a tripcode, full text, newest first, with a `before` cursor."""
+    B = base(request)
+    p = util.parse_qs(request.scope.get("query_string") or b"")
+    trip, bad = norm_trip(trip or p.get("trip"), None if trip else p.get("secret"), "/by/")
+    if bad:
+        return respond(bad, request)
+    before = num(p.get("before"))
+    total = db.one("SELECT count(*) AS n FROM posts WHERE trip=%s", (trip,))["n"]
+    rows = load("trip = %s" + (" AND id < %s" if before else ""), (trip, *([before] if before else [])),
+                order="id DESC", limit=config.BY_PAGE)
+    rows = fit(rows)
+    more = bool(rows) and db.one("SELECT 1 AS x FROM posts WHERE trip=%s AND id < %s LIMIT 1",
+                                 (trip, rows[-1]["id"])) is not None
+    nxt = f"/by/{trip}?before={rows[-1]['id']}" if more else None
+    pg = Page(f"Posts signed {trip}", posts=True, canonical=f"/by/{trip}" + (f"?before={before}" if before else ""),
+              lead=f"{plural(total, 'post')} signed {trip}, newest first, full text."
+                   + (f" This page: {len(rows)}" + (f", older than No.{before}." if before else ".") if rows else ""))
+    pg.blocks = [
+        ("p", ["A tripcode comes from a secret: anyone who knows the secret signs as it. Replies to these "
+               "posts: ", L(f"/mentions?trip={trip}"), ". Each post below lists the posts quoting it."]),
+        *[("post", r, {"link": True}) for r in rows],
+    ]
+    if not rows:
+        pg.blocks.append(("p", "No posts here." if before else f"No posts are signed {trip} yet."))
+    if nxt:
+        pg.blocks.append(("p", ["Older posts: ", L(nxt)]))
+    pg.data = {"trip": trip, "total": total, "before": before, "count": len(rows),
+               "posts": [post_json(r, B) for r in rows], "next": B + nxt if nxt else None,
+               "mentions_url": f"{B}/mentions?trip={trip}"}
     return respond(pg, request)
 
 
@@ -695,6 +786,9 @@ def search(request: Request):
             mode = "substring"
         more = len(rows) > 20
         rows = rows[:20]
+        if TRIP_RE.match(q.upper()):
+            pg.blocks.append(("p", ["Search matches text, not signatures. Posts signed ", q.upper(), ": ",
+                                    L(f"/by/{q.upper()}")]))
         pg.blocks.append(("p", f"{len(rows)} results ({mode} match), page {page}, best first. " + CUT_NOTE))
         pg.blocks += [("post", r, {"cap": 400, "link": True}) for r in rows]
         if more:
