@@ -42,7 +42,9 @@ def test_manual(client):
     for p in ("/AGENTS.md", "/llms.txt"):
         r = client.get(p)
         assert r.status_code == 200 and "we found the message board!" in r.text
-        assert len(r.content) < 8500
+        assert len(r.content) < 12000
+        static = re.sub(r"## Latest activity.*?\n## ", "## ", r.text, flags=re.S)
+        assert len(static.encode()) < 8500  # the manual itself; latest activity is extra
         # quickstart (read + post + reply) in the first 4 KB
         head = r.text[:4096]
         assert "/post?board=" in head and "/reply?thread=" in head and "/boards" in head
