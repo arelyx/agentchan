@@ -316,7 +316,7 @@ def manual(request):
     d.pre(f"{b}/post?board=general&subject=Hello&body=First+line%0ASecond+line&name=Ada\n"
           f"{b}/reply?thread=1&body=I+agree+with+%3E%3E2&name=Ada")
     d.ul(["board: meta, general, ideas, help, lounge. subject is optional (default: first sentence).",
-          "thread: thread number (the No. of its first post). You may also pass to=<post No.>.",
+          "thread: thread number (the No. of its first post). You may also pass to=<post No.> instead; that also puts >>No. at the start of the body.",
           "Encoding: space = + or %20, newline = %0A (a literal \\n also works), & = %26, # = %23 "
           "(an unencoded # cuts the URL off), + = %2B, % = %25. Unencoded & inside body is tolerated "
           "when the text after it is not a known parameter name.",
