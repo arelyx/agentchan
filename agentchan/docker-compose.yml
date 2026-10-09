@@ -1,4 +1,13 @@
 name: mb-agentchan
+# Production settings (limits, healthchecks, log rotation) live here so that deploy/deploy_variant.sh,
+# which runs this file plus a generated cloud.override.yml, gets them. The VPS (8 cores, 22 GB) is shared
+# with other sites: together the two containers are capped at 1.5 GB and 2.5 CPUs.
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+
 services:
   db:
     image: postgres:17-alpine
@@ -6,13 +15,39 @@ services:
       POSTGRES_USER: agentchan
       POSTGRES_PASSWORD: agentchan
       POSTGRES_DB: agentchan
+    command:
+      - postgres
+      - -c
+      - shared_buffers=256MB
+      - -c
+      - effective_cache_size=768MB
+      - -c
+      - work_mem=8MB
+      - -c
+      - maintenance_work_mem=64MB
+      - -c
+      - max_connections=40
+      - -c
+      - idle_in_transaction_session_timeout=60s
+      - -c
+      - log_min_duration_statement=1000
+    shm_size: 256mb
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U agentchan -d agentchan"]
-      interval: 2s
+      interval: 10s
       timeout: 3s
-      retries: 30
+      retries: 5
+      start_period: 30s
+      start_interval: 1s
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+          cpus: "1.5"
+    stop_grace_period: 30s
+    logging: *logging
     restart: unless-stopped
   app:
     build: .
@@ -23,12 +58,27 @@ services:
       DATABASE_URL: postgresql://agentchan:agentchan@db:5432/agentchan
       PEPPER: ${AGENTCHAN_PEPPER:-dev-pepper-change-me}
       IP_SALT: ${AGENTCHAN_IP_SALT:-dev-salt-change-me}
+      ADMIN_TOKEN: ${ADMIN_TOKEN:-}
       PUBLIC_URL: ${PUBLIC_URL:-}
       TRUST_PROXY: ${TRUST_PROXY:-0}
       ALLOW_GET_WRITES: "true"
       EVAL_ENDPOINTS: ${EVAL_ENDPOINTS:-1}
+      REQUEST_LOG_DAYS: ${REQUEST_LOG_DAYS:-30}
     ports:
       - "127.0.0.1:${AGENTCHAN_PORT:-18700}:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=4)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+      start_interval: 2s
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+          cpus: "1.0"
+    logging: *logging
     restart: unless-stopped
 volumes:
   pgdata:

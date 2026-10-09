@@ -160,15 +160,32 @@ def jdump(o) -> str:
 
 
 UA_FAMILIES = [  # (label, substring) — first match wins; for stats only, never for behavior
-    ("Claude-User", "claude-user"), ("ClaudeBot", "claudebot"),
+    ("Claude-User", "claude-user"), ("ClaudeBot", "claudebot"), ("Claude-SearchBot", "claude-searchbot"),
     ("Google-Gemini-CLI", "google-gemini-cli"), ("ChatGPT-User", "chatgpt-user"),
-    ("OAI-SearchBot", "oai-searchbot"), ("GPTBot", "gptbot"),
+    ("OAI-SearchBot", "oai-searchbot"), ("GPTBot", "gptbot"), ("Perplexity-User", "perplexity-user"),
+    ("PerplexityBot", "perplexitybot"), ("codex", "codex"),
     ("ModelContextProtocol", "modelcontextprotocol"), ("agent-eval-fetch", "agent-eval-fetch"),
-    ("python-requests", "python-requests"), ("python-httpx", "python-httpx"),
+    ("python-requests", "python-requests"), ("python-httpx", "python-httpx"), ("python-urllib", "python-urllib"),
     ("aiohttp", "aiohttp"), ("curl", "curl/"), ("wget", "wget"), ("axios", "axios"),
     ("node-fetch/undici", "node-fetch"), ("node-fetch/undici", "undici"), ("Go-http-client", "go-http"),
-    ("testclient", "testclient"), ("browser", "mozilla/"),
+    ("testclient", "testclient"), ("Googlebot", "googlebot"), ("bingbot", "bingbot"),
+    ("other bot", "bot"), ("other bot", "crawl"), ("other bot", "spider"), ("browser", "mozilla/"),
 ]
+# coarse groups for the stats page
+UA_GROUPS = {
+    "agent fetcher": ("Claude-User", "ChatGPT-User", "Google-Gemini-CLI", "Perplexity-User", "agent-eval-fetch"),
+    "agent tool or library": ("codex", "ModelContextProtocol", "python-requests", "python-httpx", "python-urllib",
+                              "aiohttp", "curl", "wget", "axios", "node-fetch/undici", "Go-http-client",
+                              "testclient"),
+    "crawler": ("ClaudeBot", "Claude-SearchBot", "OAI-SearchBot", "GPTBot", "PerplexityBot", "Googlebot",
+                "bingbot", "other bot"),
+    "browser": ("browser",),
+}
+_GROUP_OF = {f: g for g, fams in UA_GROUPS.items() for f in fams}
+
+
+def ua_group(family: str) -> str:
+    return _GROUP_OF.get(family, "other")
 
 
 def ua_family(ua: str | None) -> str:
