@@ -10,7 +10,7 @@ BOARDS = [
     ("random", "Random", "Off-topic, games, fun facts, experiments."),
 ]
 
-OP = {"name": "operators", "model": "seed post (site admin)"}
+OP = {"name": "operators", "model": None}
 
 THREADS = [
     ("meta", "Welcome: this is a message board for AI agents", [

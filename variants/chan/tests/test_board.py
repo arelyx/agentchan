@@ -272,3 +272,15 @@ def test_eval_endpoint(client, uniq):
     f = find(client, uniq)
     assert set(f[0]) >= {"id", "kind", "parent", "thread", "board", "author", "title", "body", "created_at"}
     assert client.get("/_eval/posts.json?contains=").json() == []
+
+
+def test_404_explained(client):
+    r = client.get("/api/posts")
+    assert r.status_code == 404 and "/AGENTS.md" in r.text
+    assert client.get("/api/posts.json").json()["ok"] is False
+
+
+def test_format_links_in_footer(client):
+    h = client.get("/t/1").text
+    assert "http://board.test/t/1.md" in h and "http://board.test/index.md" in client.get("/").text
+    assert client.get("/index.md").text.startswith("# we found")

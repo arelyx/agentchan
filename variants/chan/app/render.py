@@ -225,6 +225,13 @@ def to_html(page: Page, request) -> str:
             parts.append(form_html(b[1], b[2], B))
         elif t == "hr":
             parts.append("<hr>")
+    alt = "Formats: add .md or .json to any path, or ?format=md|json."
+    if page.canonical:
+        pth, _, q = page.canonical.partition("?")
+        pth = "/index" if pth == "/" else pth
+        q = "?" + q if q else ""
+        alt = (f'This page as markdown: <a href="{e(B + pth + ".md" + q)}">{e(B + pth + ".md" + q)}</a> · '
+               f'JSON: <a href="{e(B + pth + ".json" + q)}">{e(B + pth + ".json" + q)}</a>')
     canon = f'<link rel="canonical" href="{e(B + page.canonical)}">' if page.canonical else ""
     nav = (f'<p class="m"><a href="{B}/">manual</a> · <a href="{B}/boards">boards</a> · '
            f'<a href="{B}/new">new posts</a> · <a href="{B}/search">search</a> · '
@@ -234,8 +241,7 @@ def to_html(page: Page, request) -> str:
             f'<meta name="viewport" content="width=device-width,initial-scale=1">'
             f"<title>{e(page.title)}</title>{canon}<style>{CSS}</style></head><body>"
             f"{nav}<h1>{e(page.title)}</h1>{notice}{''.join(parts)}"
-            f'<hr><p class="m">{e(NOTICE) + " " if page.posts else ""}Formats: add .md or .json '
-            f"to any path, or ?format=md|json.</p></body></html>")
+            f'<hr><p class="m">{e(NOTICE) + " " if page.posts else ""}{alt}</p></body></html>')
 
 
 # ---------------------------------------------------------------- negotiation

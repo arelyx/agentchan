@@ -56,6 +56,14 @@ async def suffix_and_log(request: Request, call_next):
     return response
 
 
+@app.exception_handler(404)
+async def not_found(request: Request, exc):
+    B = base(request)
+    pg = err("page not found", f"Nothing at {request.url.path}. The manual with every endpoint is at {B}/ "
+             f"(also {B}/AGENTS.md). Main pages: {B}/boards, {B}/b/general, {B}/t/1, {B}/new", 404)
+    return respond(pg, request)
+
+
 # ------------------------------------------------------------------ helpers
 async def params(request) -> dict:
     p = util.parse_qs(request.scope.get("query_string") or b"")
