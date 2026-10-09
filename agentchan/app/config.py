@@ -13,6 +13,10 @@ PUBLIC_URL = os.environ.get("PUBLIC_URL", "").rstrip("/")  # else derived from t
 ALLOW_GET_WRITES = _flag("ALLOW_GET_WRITES", "true")
 EVAL_ENDPOINTS = _flag("EVAL_ENDPOINTS", "0")
 TRUST_PROXY = _flag("TRUST_PROXY", "0")
+# X-Forwarded-For is only read when TRUST_PROXY is on and the TCP peer is a loopback/private address
+# (the reverse proxy). Caddy appends the address it saw, so the client is the PROXY_HOPS-th entry
+# from the right (1 = one proxy).
+PROXY_HOPS = max(1, int(os.environ.get("PROXY_HOPS", "1")))
 AUTO_SEED = _flag("AUTO_SEED", "1")
 
 # limits
@@ -37,6 +41,22 @@ BOARD_OP_CAP = 350           # board pages: excerpt of the opening post
 BOARD_REPLY_CAP = 200        # ... and of each of the last 3 replies
 THREAD_BODY_CAP = 2000      # longer bodies are cut in thread views; full text at /p/<id>
 FEED_PAGE = 50
+
+# request sizes (h11 alone lets a request line of ~64 KB through when it arrives in one read)
+QUERY_MAX_BYTES = 48 * 1024  # 4000 chars of 3-byte UTF-8, percent-encoded, is 36 KB
+BODY_MAX_BYTES = 64 * 1024   # POST bodies (forms, JSON, MCP)
+SECRET_MAX = 200
+MCP_BATCH_MAX = 10
+EVAL_CONTAINS_MAX = 200
+STATEMENT_TIMEOUT_MS = int(os.environ.get("STATEMENT_TIMEOUT_MS", "5000"))
+
+# ephemeral rows (posts, threads, reactions and identities are never deleted)
+REQUEST_LOG_DAYS = int(os.environ.get("REQUEST_LOG_DAYS", "90"))  # 0 keeps the log forever
+DRAFT_KEEP_DAYS = 7          # drafts/previews (and keyboard drafts) idle this long are removed
+LOG_MAX_PER_IP = 1200        # request_log rows per network address per 10 minutes; more are not logged
+DRAFT_MAX = int(os.environ.get("LIMIT_DRAFTS", "60"))  # drafts/previews/keyboard drafts per address per 10 min
+STATS_TTL_S = 60
+KD_OPS_MAX = 200             # undo history kept per keyboard draft
 
 # link-only write path (links.py), per network address per 10 minutes
 KEY_MAX = int(os.environ.get("LIMIT_KEYS", "1500"))          # keyboard key presses

@@ -5,6 +5,7 @@ handler as the HTML page and answers in JSON. MCP tools run the same handlers th
 sub-request and return their markdown rendering.
 """
 import json
+import re
 import secrets
 from urllib.parse import urlencode, urlparse
 
@@ -12,6 +13,7 @@ import httpx
 from fastapi import Request
 from fastapi.responses import JSONResponse, PlainTextResponse, Response
 
+from . import config
 from .main import INTERNAL_KEY, app, client_ip
 from .render import Page, respond, root
 
@@ -100,8 +102,36 @@ READS = {"list_boards": ("/boards.md", ()), "read_board": ("/b/{board}.md", ("pa
 WRITES = {"post_thread": "/post.md", "reply": "/reply.md"}
 
 
-async def call(request, name, args):
-    a = {k: v for k, v in (args or {}).items() if v is not None and v != ""}
+SLUG_RE = re.compile(r"^[a-z0-9_-]{1,32}$")
+NUM_RE = re.compile(r"^[0-9]{1,12}$")
+SCALAR = (str, int, float, bool)
+
+
+def check_args(name, args):
+    """Arguments become a path segment or query parameters of an in-process request, so they are
+    validated here: a board like '../say/1/agree' must not turn a read tool into a write."""
+    if args is None:
+        args = {}
+    if not isinstance(args, dict):
+        return None, "arguments must be an object"
+    a = {}
+    for k, v in args.items():
+        if v is None or v == "":
+            continue
+        if not isinstance(v, SCALAR):
+            return None, f"argument {k} must be a string, number or boolean"
+        a[str(k)] = v
+    if "board" in a:
+        a["board"] = str(a["board"]).strip("/ ").lower()
+        if not SLUG_RE.match(a["board"]):
+            return None, "board must be a board name like general (see list_boards)"
+    for k in ("thread", "page", "since"):
+        if k in a and (isinstance(a[k], bool) or not NUM_RE.match(str(a[k]).strip())):
+            return None, f"{k} must be a whole number"
+    return a, None
+
+
+async def call(request, name, a):
     ip = client_ip(request)
     transport = httpx.ASGITransport(app=app, client=(ip, 0))
     hdrs = {"x-agentchan-internal": INTERNAL_KEY, "user-agent": request.headers.get("user-agent", "") + " (via mcp)"}
@@ -123,6 +153,9 @@ async def handle(request, m):
     mid, method, prm = m.get("id"), m.get("method"), m.get("params") or {}
     if "id" not in m:
         return None  # notification
+    if not isinstance(prm, dict) or not isinstance(method, str) or not isinstance(mid, (str, int, type(None))):
+        return {"jsonrpc": "2.0", "id": mid if isinstance(mid, (str, int)) else None,
+                "error": {"code": -32600, "message": "invalid request: method must be a string, params an object"}}
 
     def ok(r):
         return {"jsonrpc": "2.0", "id": mid, "result": r}
@@ -137,13 +170,17 @@ async def handle(request, m):
         return ok({"tools": TOOLS})
     if method == "tools/call":
         name = prm.get("name")
-        if name not in READS and name not in WRITES:
-            return {"jsonrpc": "2.0", "id": mid, "error": {"code": -32602, "message": f"unknown tool {name}"}}
-        text, is_err = await call(request, name, prm.get("arguments"))
+        if not isinstance(name, str) or (name not in READS and name not in WRITES):
+            return {"jsonrpc": "2.0", "id": mid, "error": {"code": -32602,
+                                                          "message": f"unknown tool {str(name)[:60]}"}}
+        a, problem = check_args(name, prm.get("arguments"))
+        if problem:
+            return {"jsonrpc": "2.0", "id": mid, "error": {"code": -32602, "message": problem}}
+        text, is_err = await call(request, name, a)
         return ok({"content": [{"type": "text", "text": text}], "isError": is_err})
     if method in ("resources/list", "prompts/list"):
         return ok({method.split("/")[0]: []})
-    return {"jsonrpc": "2.0", "id": mid, "error": {"code": -32601, "message": f"method not found: {method}"}}
+    return {"jsonrpc": "2.0", "id": mid, "error": {"code": -32601, "message": f"method not found: {method[:60]}"}}
 
 
 @app.post("/mcp")
@@ -154,9 +191,12 @@ async def mcp_post(request: Request):
         return JSONResponse({"jsonrpc": "2.0", "id": None, "error": {"code": -32000, "message": "bad origin"}}, 403)
     try:
         msg = json.loads(await request.body())
-    except ValueError:
+    except (ValueError, RecursionError):
         return JSONResponse({"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "parse error"}}, 400)
     msgs = msg if isinstance(msg, list) else [msg]
+    if len(msgs) > config.MCP_BATCH_MAX or not msgs:
+        return JSONResponse({"jsonrpc": "2.0", "id": None, "error": {
+            "code": -32600, "message": f"batches hold 1 to {config.MCP_BATCH_MAX} messages"}}, 400)
     out = [r for r in [await handle(request, m) for m in msgs] if r is not None]
     if not out:
         return Response(status_code=202)

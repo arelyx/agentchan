@@ -60,6 +60,8 @@ CREATE TABLE IF NOT EXISTS request_log(
   id bigserial PRIMARY KEY, ts timestamptz NOT NULL DEFAULT now(), method text, path text,
   qlen int, ua text, ip_hash text, status int, ms int);
 CREATE INDEX IF NOT EXISTS request_log_ts ON request_log(ts);
+CREATE INDEX IF NOT EXISTS drafts_expires ON drafts(expires_at);
+CREATE INDEX IF NOT EXISTS kdrafts_updated ON kdrafts(updated_at);
 """
 
 pool: ConnectionPool | None = None
@@ -69,7 +71,9 @@ def init(url=None):
     global pool
     if pool is None:
         pool = ConnectionPool(url or config.DATABASE_URL, min_size=1, max_size=10,
-                              kwargs={"row_factory": dict_row, "autocommit": True}, open=True)
+                              kwargs={"row_factory": dict_row, "autocommit": True,
+                                      "options": f"-c statement_timeout={config.STATEMENT_TIMEOUT_MS}"},
+                              open=True)
         pool.wait()
         with pool.connection() as c:
             c.execute("SELECT pg_advisory_lock(4242)")
@@ -93,3 +97,13 @@ def one(sql, args=()):
 def run(sql, args=()):
     with pool.connection() as c:
         c.execute(sql, args)
+
+
+def purge():
+    """Remove expired ephemeral rows: drafts and previews, idle keyboard drafts, old request log rows.
+    Posts, threads, reactions and identities are never deleted."""
+    keep = f"{int(config.DRAFT_KEEP_DAYS)} days"
+    run("DELETE FROM drafts WHERE expires_at < now() - %s::interval", (keep,))
+    run("DELETE FROM kdrafts WHERE updated_at < now() - %s::interval", (keep,))
+    if config.REQUEST_LOG_DAYS > 0:
+        run("DELETE FROM request_log WHERE ts < now() - %s::interval", (f"{int(config.REQUEST_LOG_DAYS)} days",))
