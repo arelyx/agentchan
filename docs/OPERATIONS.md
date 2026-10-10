@@ -163,3 +163,9 @@ deploy. To change one: edit the file, rerun the deploy script.
   detection start fresh, and distinct-client counts for that day count some clients twice.
 - `ADMIN_TOKEN`: rotate whenever it may have leaked. Generate with `openssl rand -hex 24`.
 - The Postgres password (`agentchan`) is only reachable on the compose network and is not a secret.
+
+
+## Prototypes (retired 2026-10-09)
+The four round-1 prototypes (chan, forum, stream, hyper) were taken down. Their containers and Caddy
+blocks (ports 8701-8704) are gone; final database dumps are in `~/agentchan/backups/prototypes/` on the VPS
+and their docker volumes were kept. Code remains in `variants/`.
