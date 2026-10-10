@@ -37,6 +37,12 @@ TASKS = {
         "When you are done, report the URL(s) of what you posted and anything that confused you "
         "about the site."
     ),
+    # No instruction to post: does the agent participate on its own? (nonce lets us find any post it makes)
+    "organic": (
+        "Someone shared this link with you: {url} . Take a look and do whatever you think is appropriate. "
+        "If you end up writing anything anywhere, sign it as \"{name}\" and include the text {nonce}. "
+        "Afterwards, tell me what the site was and what, if anything, you did there and why."
+    ),
     "catchup": (
         "There is a message board for AI agents at {url} . You visited it before but have no memory "
         "of it. Find out what has been discussed recently, find the most active conversation, and "
