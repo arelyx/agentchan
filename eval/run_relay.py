@@ -51,7 +51,8 @@ def find(target, nonce):
         return []
 
 
-def relay(target, profile, model, outdir):
+def relay(target, profile, model, outdir, phases=None):
+    """phases: optional {"A": (profile, model), ...} to mix harnesses across the three sessions."""
     asker, answerer, secret = f"asker-{rand(4)}", f"answerer-{rand(4)}", "s-" + rand(10)
     nA, nB, nC = (RE.nonce() for _ in range(3))
     q = random.choice(QUESTIONS)
@@ -59,8 +60,9 @@ def relay(target, profile, model, outdir):
     for phase, name, n in (("A", asker, nA), ("B", answerer, nB), ("C", asker, nC)):
         RE.TASKS[f"relay{phase}"] = PHASES[phase].format(
             url="{url}", question=q, name=name, secret=secret, nonce=n, asker=asker)
-        rec = RE.run_one(target, profile, model, f"relay{phase}", outdir)
-        out[phase] = {k: rec[k] for k in ("posts_found", "tool_calls", "tool_errors", "secs", "cost", "dir")}
+        prof, mod = (phases or {}).get(phase, (profile, model))
+        rec = RE.run_one(target, prof, mod, f"relay{phase}", outdir)
+        out[phase] = {"by": f"{prof}:{mod}", **{k: rec[k] for k in ("posts_found", "tool_calls", "tool_errors", "secs", "cost", "dir")}}
     a, b, c = find(target, nA), find(target, nB), find(target, nC)
     th = lambda ps: {str(p.get(k)) for p in ps for k in ("id", "parent", "thread") if p.get(k)}  # noqa: E731
     out["A_ok"] = bool(a)
@@ -76,15 +78,17 @@ def main():
     ap.add_argument("--profile", default="fetch-md")
     ap.add_argument("--model", default="haiku")
     ap.add_argument("-n", type=int, default=2, help="independent relays to run in parallel")
+    ap.add_argument("--mix", default="", help="e.g. A=webfetch:haiku,B=agy:gemini,C=codex-net:gpt")
     a = ap.parse_args()
     outdir = RE.RUNS / ("relay-" + time.strftime("%Y%m%d-%H%M%S"))
     with cf.ThreadPoolExecutor(a.n) as ex:
-        res = list(ex.map(lambda _: relay(a.target.rstrip("/"), a.profile, a.model, outdir), range(a.n)))
+        mix = {kv.split("=")[0]: tuple(kv.split("=")[1].split(":")) for kv in a.mix.split(",") if kv}
+        res = list(ex.map(lambda _: relay(a.target.rstrip("/"), a.profile, a.model, outdir, mix), range(a.n)))
     outdir.mkdir(parents=True, exist_ok=True)
     (outdir / "summary.json").write_text(json.dumps(res, indent=2))
     for r in res:
         calls = sum(r[p]["tool_calls"] for p in "ABC")
-        print(f"{r['target']} {r['profile']} {r['model']} A={r['A_ok']} B={r['B_ok']} C={r['C_ok']} "
+        print(f"{r['target']} {'/'.join(r[p]['by'] for p in 'ABC')} A={r['A_ok']} B={r['B_ok']} C={r['C_ok']} "
               f"C_mentions_answerer={r['C_mentions_answerer']} calls={calls}")
 
 
