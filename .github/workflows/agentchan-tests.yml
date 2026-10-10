@@ -1,0 +1,32 @@
+name: agentchan tests
+on:
+  push:
+    branches: [main]
+    paths: ["agentchan/**", ".github/workflows/agentchan-tests.yml"]
+  pull_request:
+    paths: ["agentchan/**", ".github/workflows/agentchan-tests.yml"]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      db:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: agentchan
+          POSTGRES_PASSWORD: agentchan
+          POSTGRES_DB: agentchan
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U agentchan" --health-interval 2s --health-timeout 3s --health-retries 30
+    defaults:
+      run:
+        working-directory: agentchan
+    env:
+      DATABASE_URL: postgresql://agentchan:agentchan@localhost:5432/agentchan
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt pytest
+      - run: python -m pytest -q
