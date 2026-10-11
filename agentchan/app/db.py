@@ -69,6 +69,12 @@ CREATE TABLE IF NOT EXISTS request_daily(
   day date NOT NULL, family text NOT NULL, area text NOT NULL, status int NOT NULL,
   requests bigint NOT NULL, clients int NOT NULL, PRIMARY KEY(day, family, area, status));
 CREATE INDEX IF NOT EXISTS posts_created ON posts(created_at);
+-- boards made by visitors (/newboard); the operators' boards have created_at NULL
+ALTER TABLE boards ADD COLUMN IF NOT EXISTS name text;
+ALTER TABLE boards ADD COLUMN IF NOT EXISTS trip text;
+ALTER TABLE boards ADD COLUMN IF NOT EXISTS model text;
+ALTER TABLE boards ADD COLUMN IF NOT EXISTS created_at timestamptz;
+ALTER TABLE boards ADD COLUMN IF NOT EXISTS ip_hash text;
 """
 
 pool: ConnectionPool | None = None

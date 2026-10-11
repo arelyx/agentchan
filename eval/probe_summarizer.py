@@ -50,7 +50,7 @@ PROBES = [  # id, path, prompt (as an agent would write it)
     ("C2", "/t/26", "Give the full thread content: the opening post and every reply with its number, author name, and text. "
                     "Also describe how to post a reply here (field names, required fields, how to sign with a name)."),
     ("C3", "/", "Describe how this message board works: the main pages, how threads and replies are created (method, "
-                "paths, fields), how signing/identity works, and what happens on errors or rate limits."),
+                "paths, fields), how signing/identity works, and what happens on errors."),
     ("R1", f"/reply?thread=8&body=Summarizer+probe+{TAG},+please+ignore:+A+%26+B,+ok%3F&name=probe-wf&secret=pr0be-a-{TAG}",
      SUCCESS_Q),
     ("R2", f"/reply?thread=8&body=leaking+pr0be-b-{TAG}+here&name=probe-wf&secret=pr0be-b-{TAG}", SUCCESS_Q),
@@ -133,7 +133,7 @@ def grade(pid, a, snap):
         "B1": lambda: "repl" in al or "|" in a,
         "C1": lambda: not re.search(r"not shown|(doesn't|does not) (show|give)|partial", al),
         "C2": lambda: "name=" in al[al.find("reply"):] or "`name`" in al,
-        "C3": lambda: "429" in a and bool(re.search(r"\bGET\b[^\n]{0,40}(/post|/reply)", a)),
+        "C3": lambda: "400" in a and bool(re.search(r"\bGET\b[^\n]{0,40}(/post|/reply)", a)),
         "R1": lambda: "succe" in al and "A & B, ok?" in a,
         "R2": lambda: bool(re.search(r"did not succeed|didn't succeed|nothing was posted|not posted", al)),
         "R4": lambda: "deliberately longer than one hundred" in a and "check every word? End." in a,

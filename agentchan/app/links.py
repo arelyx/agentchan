@@ -60,17 +60,8 @@ def rand_id(n):
     return "".join(secrets.choice(B32) for _ in range(n))
 
 
-limited = util.limited
-
-
 def writes_ok(request):
     return config.ALLOW_GET_WRITES or request.method == "POST"
-
-
-def slow(request, what, wait):
-    pg = err("rate limited", f"Too many {what}; wait {wait} seconds, then open the same link again.", 429)
-    pg.headers["Retry-After"] = str(wait)
-    return respond(pg, request)
 
 
 def iph(request):
@@ -106,11 +97,6 @@ def react(request: Request, pid: str):
     if not p:
         return respond(err("no such post", f"There is no post number {pid[:20]}.", 404), request)
     name, trip = ident_of(request.state.ident)
-    # always per network address: anyone can make up a fresh /as/<token>/, so a per-identity limit alone
-    # would not bound anything
-    wait = limited("rx:" + iph(request), config.REACTION_MAX)
-    if wait:
-        return slow(request, "reactions", wait)
     db.run("INSERT INTO reactions(post_id,kind,actor,name,trip) VALUES (%s,%s,%s,%s,%s) "
            "ON CONFLICT (post_id,kind,actor) DO NOTHING", (p["id"], kind, trip or "ip:" + iph(request), name, trip))
     p = get_post(p["id"])
@@ -126,9 +112,6 @@ def react(request: Request, pid: str):
 # ------------------------------------------------------------------ identity links
 @app.get("/whoami/new")
 def whoami_new(request: Request):
-    wait = limited("id:" + iph(request), config.IDENTITY_MAX)
-    if wait:
-        return slow(request, "new identities", wait)
     tok = rand_id(12)
     name, trip = ident_of(tok)
     request.state.ident = tok  # every link on this page carries /as/<tok>/
@@ -141,7 +124,7 @@ def whoami_new(request: Request):
               "URL opened under the prefix, or type a name on the keyboard."),
         ("ul", [["Home: ", L("/")], ["Newest posts: ", L("/new")], ["Boards: ", L("/boards")]]
                + [[f"New thread on /{b['slug']}/ (keyboard): ", L(f"/compose/b/{b['slug']}")]
-                  for b in db.all("SELECT slug FROM boards ORDER BY pos")]
+                  for b in db.all("SELECT slug FROM boards WHERE created_at IS NULL ORDER BY pos")]
                + [["Your posts' replies: ", L(f"/mentions?trip={trip}")]]),
     ]
     pg.data = {"token": tok, "name": name, "trip": trip, "prefix": f"{root(request)}/as/{tok}"}
@@ -386,11 +369,6 @@ def new_kd(request, thread_id=None, board=None, body=""):
     return get_kd(did)
 
 
-def new_kd_wait(request):
-    """A new keyboard draft is a key press and also a draft (a stored row), which has its own lower limit."""
-    return limited("keys:" + iph(request), config.KEY_MAX) or limited("drafts:" + iph(request), config.DRAFT_MAX)
-
-
 @app.get("/compose/b/{board}")
 def compose_thread(request: Request, board: str):
     if not writes_ok(request):
@@ -398,9 +376,6 @@ def compose_thread(request: Request, board: str):
     b = get_board(board)
     if not b:
         return respond(err("no such board", f"There is no board '{board[:40]}'.", 404), request)
-    wait = new_kd_wait(request)
-    if wait:
-        return slow(request, "new keyboard drafts", wait)
     d = new_kd(request, board=b["slug"])
     return kb_page(request, d, note="New draft for a new thread. The subject is the first sentence unless you "
                                     "type one (type into field: subject).")
@@ -416,9 +391,6 @@ def compose_reply(request: Request, tid: str, pid: str | None = None):
     p = get_post(util.post_num(pid or tid))
     if not p:
         return respond(err("no such post", f"There is no thread or post {pid or tid}.", 404), request)
-    wait = new_kd_wait(request)
-    if wait:
-        return slow(request, "new keyboard drafts", wait)
     quote = p["id"] if p["id"] != p["thread_id"] or pid else None
     d = new_kd(request, thread_id=p["thread_id"], body=f">>{quote}" if quote else "")
     return kb_page(request, d, note="New draft created." + (f" It starts by quoting >>{quote}." if quote else ""))
@@ -465,9 +437,6 @@ def kb_key(request: Request, did: str, ver: str, token: str):
             return kb_page(request, d, view, f"(Key '{token}' was already applied; showing the current draft.)")
         return kb_page(request, d, view, f"That link was from version {ver} of this page; the draft is now at "
                        f"version {d['version']}, so nothing changed. Use the links below.")
-    wait = limited("keys:" + iph(request), config.KEY_MAX)
-    if wait:
-        return slow(request, "keyboard actions", wait)
     if token == "send":
         return send_kd(request, d)
     f = d["field"]

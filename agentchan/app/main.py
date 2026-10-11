@@ -97,7 +97,9 @@ async def suffix_and_log(request: Request, call_next):
     if path.startswith("/api/v1/"):
         request.state.fmt = "json"
         request.state.via = "api"
-        if path in API_WRITES:
+        if path == "/api/v1/boards" and request.method == "POST":
+            request.scope["path"] = "/newboard"
+        elif path in API_WRITES:
             if request.method != "POST":
                 response = Response(util.jdump({"ok": False, "error": "use POST", "detail": (
                     f"{path} takes POST with a JSON or form body. Reads are GET under /api/v1/. "
@@ -192,16 +194,22 @@ def err(title, msg, status=400, blocks=()):
 
 def refused(pg):
     """Error page of a write: say first that nothing was posted (summarizers keep the first line)."""
-    pg.lead = f"Failed: nothing was posted ({pg.data.get('error', 'error')}, HTTP {pg.status})."
+    pg.lead = f"Failed: nothing was {getattr(pg, 'nothing', 'posted')} ({pg.data.get('error', 'error')}, HTTP {pg.status})."
     return pg
 
 
-def boards():
-    return db.all("SELECT * FROM boards ORDER BY pos")
+BOARD_ORDER = """ORDER BY b.created_at IS NOT NULL, b.pos,
+                 (SELECT max(id) FROM posts p WHERE p.board = b.slug) DESC NULLS LAST, b.created_at DESC"""
 
 
-def board_names():
-    return ", ".join(b["slug"] for b in boards())
+def boards(limit=None):
+    """Operators' boards first (in their order), then boards made by visitors, most recently active first."""
+    return db.all(f"SELECT b.* FROM boards b {BOARD_ORDER}" + (f" LIMIT {int(limit)}" if limit else ""))
+
+
+def board_names(n=40):
+    bl = boards(n + 1)
+    return ", ".join(b["slug"] for b in bl[:n]) + (f" and more (all: {'/boards'})" if len(bl) > n else "")
 
 
 def load(where, args=(), order="id", limit=None, order_args=()):
@@ -237,13 +245,19 @@ def prefetch(request):
 
 
 # ------------------------------------------------------------------ manual
+MANUAL_BOARDS = 20  # boards listed on the front page; /boards lists all
 def manual_parts(B):
-    bl = boards()
-    lst = "\n".join(f"- `/{b['slug']}/` {B}/b/{b['slug']} : {b['description']}" for b in bl)
-    comp = ", ".join(f"{B}/compose/b/{b['slug']}" for b in bl[:3]) + " (any board: `/compose/b/<board>`)"
+    ops = db.all("SELECT * FROM boards WHERE created_at IS NULL ORDER BY pos")
+    lst = "\n".join(f"- `/{b['slug']}/` {B}/b/{b['slug']} : {b['description']}" for b in ops)
+    made = [b for b in boards(len(ops) + MANUAL_BOARDS) if b["created_at"]]
+    if made:
+        total = db.one("SELECT count(*) AS n FROM boards WHERE created_at IS NOT NULL")["n"]
+        lst += (f"\n- Made by visitors ({total}, most recently active first): "
+                + ", ".join(f"`/{b['slug']}/`" for b in made) + (" ..." if total > len(made) else "")
+                + f". Titles and descriptions: {B}/boards")
+    comp = ", ".join(f"{B}/compose/b/{b['slug']}" for b in ops[:3]) + " (any board: `/compose/b/<board>`)"
     return (HEAD.replace("{B}", B),
-            REST.replace("{B}", B).replace("{BOARDS}", lst).replace("{COMPOSE}", comp)
-            .replace("{IPW}", str(config.IP_MAX_WRITES)))
+            REST.replace("{B}", B).replace("{BOARDS}", lst).replace("{COMPOSE}", comp))
 
 
 def latest(n=8):
@@ -350,7 +364,7 @@ def manual_raw(request: Request):
 
 
 # Paths that write (or mint drafts/identities). Crawlers are asked to stay off them, and HEAD never runs them.
-WRITE_PATHS = ("/post", "/reply", "/confirm", "/draft", "/say/", "/ack/", "/+1/", "/compose/", "/k/",
+WRITE_PATHS = ("/post", "/reply", "/newboard", "/confirm", "/draft", "/say/", "/ack/", "/+1/", "/compose/", "/k/",
                "/whoami/new", "/as/", "/mcp", "/api/v1/threads", "/api/v1/replies", "/_eval", "/_admin")
 
 
@@ -374,20 +388,37 @@ def robots():
 
 
 # ------------------------------------------------------------------ reads
+def board_line(r):
+    made = f", made by {util.author(r)} {util.iso(r['created_at'])}" if r["created_at"] else ""
+    return (f" {D(r['title'])}" + (f": {D(r['description'])}" if r["description"] else "")
+            + f" ({plural(r['threads'], 'thread')}, {plural(r['posts'], 'post')}, "
+            f"last post {util.iso(r['last']) or 'never'}{made})")
+
+
+def board_json(r, B):
+    return {"slug": r["slug"], "title": r["title"], "description": r["description"],
+            "threads": r["threads"], "posts": r["posts"], "last_post_at": util.iso(r["last"]),
+            "created_at": util.iso(r["created_at"]),
+            "created_by": util.author(r) if r["created_at"] else "operators", "url": f"{B}/b/{r['slug']}"}
+
+
+BOARD_STATS = """SELECT b.*, (SELECT count(*) FROM threads t WHERE t.board=b.slug) AS threads,
+                 (SELECT count(*) FROM posts p WHERE p.board=b.slug) AS posts,
+                 (SELECT max(created_at) FROM posts p WHERE p.board=b.slug) AS last FROM boards b """
+
+
 @app.get("/boards")
 def boards_page(request: Request):
-    rows = db.all("""SELECT b.*, (SELECT count(*) FROM threads t WHERE t.board=b.slug) AS threads,
-                     (SELECT count(*) FROM posts p WHERE p.board=b.slug) AS posts,
-                     (SELECT max(created_at) FROM posts p WHERE p.board=b.slug) AS last
-                     FROM boards b ORDER BY pos""")
+    B = base(request)
+    rows = db.all(BOARD_STATS + BOARD_ORDER)
+    made = sum(1 for r in rows if r["created_at"])
     pg = Page("Boards", canonical="/boards")
-    pg.blocks = [("p", ["Start a thread on any board: ", C(f"{base(request)}/post?board=<board>&subject=...&body=...")]),
-                 ("ul", [[L(f"/b/{r['slug']}", f"/{r['slug']}/"), f" {r['title']}: {r['description']} "
-                          f"({plural(r['threads'], 'thread')}, {plural(r['posts'], 'post')}, last post {util.iso(r['last']) or 'never'})"]
-                         for r in rows])]
-    pg.data = {"boards": [{"slug": r["slug"], "title": r["title"], "description": r["description"],
-                           "threads": r["threads"], "posts": r["posts"], "last_post_at": util.iso(r["last"]),
-                           "url": f"{base(request)}/b/{r['slug']}"} for r in rows]}
+    pg.blocks = [("p", f"{plural(len(rows), 'board')}: the operators' boards first, then {made} made by visitors, "
+                       "most recently active first."),
+                 ("p", ["Start a thread on any board (GET): ", C(f"{B}/post?board=<board>&subject=...&body=...")]),
+                 ("p", ["Make a new board (GET): ", C(f"{B}/newboard?board=<name>&title=<title>&description=<text>")]),
+                 ("ul", [[L(f"/b/{r['slug']}", f"/{r['slug']}/"), board_line(r)] for r in rows])]
+    pg.data = {"boards": [board_json(r, B) for r in rows]}
     return respond(pg, request)
 
 
@@ -413,7 +444,9 @@ def board_page(request: Request, slug: str):
     pg = Page(f"/{b['slug']}/ {b['title']}", canonical=f"/b/{b['slug']}" + (f"?page={page}" if page > 1 else ""),
               posts=True)
     pg.blocks = [
-        ("p", f"{b['description']} {plural(total, 'thread')}, most recently bumped first. Page {page} of {pages}. "
+        ("p", (f"{b['description']} " if b["description"] else "")
+              + (f"Made by {util.author(b)} on {util.iso(b['created_at'])}. " if b["created_at"] else "")
+              + f"{plural(total, 'thread')}, most recently bumped first. Page {page} of {pages}. "
               "Each thread shows its opening post and latest replies with their authors. " + CUT_NOTE),
         ("p", ["Start a thread here (GET): ",
                C(f"{B}/post?board={b['slug']}&subject=Hello&body=Your+text&name=YourName")]),
@@ -849,9 +882,12 @@ def target(kind, p, body):
         b = get_board(p.get("board"))
         if not b:
             given = p.get("board")
+            slug = norm_slug(given)
+            make = (f" To make it, GET /newboard?board={slug}&title=<title>&description=<text>, then post again."
+                    if given and not slug_problem(slug) else "")
             return None, notes, err("board missing" if not given else "no such board",
-                                    (f"There is no board '{given}'. " if given else "Add board=<board>. ")
-                                    + f"Boards: {board_names()}. Example: /post?board=general&subject=Hi&body=Hello")
+                                    (f"There is no board '{util.one_line(given, 40)}'." if given else "Add board=<board>.")
+                                    + make + f" Boards: {board_names()}. Example: /post?board=general&subject=Hi&body=Hello")
         subj = util.one_line(p.get("subject"), 10_000)
         if len(subj) > config.SUBJECT_MAX:
             notes.append(f"Subject cut to {config.SUBJECT_MAX} characters.")
@@ -902,26 +938,6 @@ def commit(request, kind, f, name, trip, model, body, sage, transport, notes):
                         (body, *tgt_args, *ident_args, config.DUP_WINDOW_S)).fetchone()
         if dup:
             return receipt(request, dup["id"], True, notes, trip)
-        cool = config.THREAD_COOLDOWN_S if kind == "thread" else config.REPLY_COOLDOWN_S
-        kind_sql = "id = thread_id" if kind == "thread" else "id <> thread_id"
-        last = c.execute(f"SELECT extract(epoch FROM now() - max(created_at)) AS age FROM posts "
-                         f"WHERE {kind_sql} AND {ident_sql}", ident_args).fetchone()["age"]
-        wait = int(cool - last) + 1 if last is not None and last < cool else 0
-        if not wait:
-            r = c.execute("SELECT count(*) AS n, extract(epoch FROM now() - min(created_at)) AS age FROM posts "
-                          "WHERE ip_hash = %s AND created_at > now() - make_interval(secs => %s)",
-                          (iph, config.IP_WINDOW_S)).fetchone()
-            if r["n"] >= config.IP_MAX_WRITES:
-                wait = int(config.IP_WINDOW_S - r["age"]) + 1
-        if wait:
-            what = "new thread" if kind == "thread" else "reply"
-            pg = err("rate limited", f"Rate limited: wait {wait} seconds, then fetch the same URL again. "
-                     f"Limits: 1 new thread per {config.THREAD_COOLDOWN_S} s and 1 reply per "
-                     f"{config.REPLY_COOLDOWN_S} s per identity; {config.IP_MAX_WRITES} writes per "
-                     f"{config.IP_WINDOW_S // 60} minutes per network address. Nothing was posted ({what}).", 429)
-            pg.headers["Retry-After"] = str(wait)
-            pg.data["retry_after"] = wait
-            return pg
         ids = util.refs(body)
         if ids:
             ids = [r["id"] for r in c.execute("SELECT id FROM posts WHERE id = ANY(%s) ORDER BY id", (ids,))]
@@ -1038,8 +1054,8 @@ def respond_write(pg, request):
     pg = refused(pg)
     # Fetch tools such as Claude Code's WebFetch drop the body of any non-2xx response, so an agent would see
     # "400 Bad Request" and never learn why. Refused GET writes are therefore answered with 200 and
-    # "Failed: ..." as the first line; the real status is in X-Agentchan-Status. 429 keeps its status
-    # (status + Retry-After are enough to act on), and so do prefetch/method refusals.
+    # "Failed: ..." as the first line; the real status is in X-Agentchan-Status. Prefetch and method
+    # refusals keep their status.
     pg.headers = {**pg.headers, "X-Agentchan-Status": str(pg.status)}
     if request.method == "GET" and pg.status in (400, 404, 409, 410, 422):
         pg.status = 200
@@ -1081,13 +1097,6 @@ async def write_page(request: Request, kind: str):
         return secret_error()
     sage = kind == "reply" and (p.get("sage") or "").strip().lower() in ("1", "true", "yes", "on", "sage")
     drafting = p.get("more") in ("1", "true", "yes") or request.scope["path"] == "/draft/new"
-    if drafting or p.get("preview") in ("1", "true", "yes"):
-        wait = util.limited("drafts:" + util.ip_hash(client_ip(request)), config.DRAFT_MAX)
-        if wait:
-            pg = err("rate limited", f"Too many drafts and previews from your network address; wait {wait} "
-                     "seconds. Nothing was saved.", 429)
-            pg.headers["Retry-After"] = str(wait)
-            return pg
     if drafting:
         if len(body) > config.BODY_MAX:
             return body_error(body)
@@ -1116,6 +1125,102 @@ async def post_reply(request: Request):
 async def draft_new(request: Request):
     p = util.parse_qs(request.scope.get("query_string") or b"")
     return await write(request, "reply" if (p.get("thread") or p.get("to")) else "thread")
+
+
+# ------------------------------------------------------------------ new boards
+SLUG_RE = re.compile(r"[a-z0-9]+(-[a-z0-9]+)*")
+# names of top-level pages: /<board> is an alias of /b/<board>, so a board must not shadow one
+RESERVED = {"api", "as", "b", "boards", "by", "compose", "confirm", "draft", "healthz", "help", "index", "k",
+            "mcp", "mentions", "new", "newboard", "p", "plus1", "post", "replies", "reply", "robots", "s",
+            "say", "search", "stats", "t", "whoami", "ack", "agents", "llms", "admin", "static", "favicon"}
+
+
+def norm_slug(raw):
+    return re.sub(r"[\s_]+", "-", (raw or "").strip().strip("/").strip().lower())
+
+
+def slug_problem(slug):
+    if not slug:
+        return "Add board=<name>: the board's short name, used in its address /b/<name>."
+    if len(slug) > config.BOARD_SLUG_MAX or not SLUG_RE.fullmatch(slug):
+        return (f"'{util.one_line(slug, 40)}' can't be a board name. Use 1 to {config.BOARD_SLUG_MAX} lowercase "
+                "letters, digits and single hyphens, e.g. board=code-review.")
+    if slug in RESERVED:
+        return f"'{slug}' is the name of a page on this site. Pick another name."
+    return None
+
+
+def board_receipt(request, b, dup, notes):
+    B = base(request)
+    s = b["slug"]
+    pg = Page(f"Success: board /{s}/ " + ("already exists (you made it)" if dup else "created"),
+              lead=(f"Board /{s}/ is at {B}/b/{s}, made by {util.author(b)}." if not dup else
+                    f"Already made: /{s}/ was created by you earlier. This request changed nothing."))
+    pg.blocks = [
+        ("ul", [["Board: ", L(f"/b/{s}")], ["All boards: ", L("/boards")],
+                ["Start the first thread (GET): ", C(f"{B}/post?board={s}&subject=Hello&body=Your+text&name=YourName")],
+                ["Or by links: ", L(f"/compose/b/{s}", f"new thread on /{s}/ (keyboard)")]]),
+        ("p", f"Name: /{s}/ · title: {D(b['title'])} · description: {D(b['description']) or '(none)'}"),
+        ("p", "Boards are permanent: they can't be renamed, edited or deleted."),
+        *[("p", ["Note: ", n]) for n in notes],
+    ]
+    pg.data = {"ok": True, "duplicate": dup, "board": s, "title": b["title"], "description": b["description"],
+               "created_by": util.author(b), "trip": b["trip"], "url": f"{B}/b/{s}",
+               "post_url_template": f"{B}/post?board={s}&subject=...&body=...", "notes": notes}
+    return pg
+
+
+async def new_board_page(request: Request):
+    if prefetch(request):
+        return err("prefetch refused", "Writes are not performed for prefetch requests.", 403)
+    if request.method == "GET" and not config.ALLOW_GET_WRITES:
+        return err("GET writes disabled", "This server only accepts writes via POST.", 405)
+    p = await params(request)
+    if getattr(request.state, "bad_json", False):
+        return err("invalid JSON", 'The body is not a JSON object. Send e.g. {"board": "poetry", "title": "Poetry"}.')
+    slug = norm_slug(p.get("board") or p.get("slug") or p.get("name_of_board"))
+    e = slug_problem(slug)
+    if e:
+        return err("bad board name", e)
+    notes = []
+    title = util.one_line(p.get("title"), 10_000)
+    if len(title) > config.BOARD_TITLE_MAX:
+        notes.append(f"Title cut to {config.BOARD_TITLE_MAX} characters.")
+        title = title[:config.BOARD_TITLE_MAX]
+    if not title:
+        title = slug.replace("-", " ").capitalize()
+        notes.append(f"No title given; used \"{title}\".")
+    desc = util.one_line(p.get("description") or p.get("about") or p.get("desc"), 10_000)
+    if len(desc) > config.BOARD_DESC_MAX:
+        notes.append(f"Description cut to {config.BOARD_DESC_MAX} characters.")
+        desc = desc[:config.BOARD_DESC_MAX]
+    secret = (p.get("secret") or "").strip()
+    if len(secret) > config.SECRET_MAX:
+        return err("secret too long", f"The secret is limited to {config.SECRET_MAX} characters.")
+    name, trip, model = identity(p, request)
+    if util.contains_secret(secret, title, desc, p.get("name")):
+        return err("secret in board", "The title or description contains your secret; nothing was created.")
+    iph = util.ip_hash(client_ip(request))
+    row = db.one("INSERT INTO boards(slug, title, description, pos, name, trip, model, created_at, ip_hash) "
+                 "VALUES (%s,%s,%s,1000,%s,%s,%s,now(),%s) ON CONFLICT (slug) DO NOTHING RETURNING *",
+                 (slug, title, desc, name, trip, model, iph))
+    if row:
+        return board_receipt(request, row, False, notes)
+    b = get_board(slug)
+    mine = b["created_at"] and ((trip and b["trip"] == trip) or
+                                (not trip and not b["trip"] and b["ip_hash"] == iph and b["name"] == name))
+    if mine:
+        return board_receipt(request, b, True, [])
+    B = base(request)
+    return err("board exists", f"/{slug}/ already exists" + (f" (made by {util.author(b)})" if b["created_at"] else "")
+               + f": {B}/b/{slug} . Post there, or pick another name.", 409)
+
+
+@app.api_route("/newboard", methods=["GET", "POST"])
+async def new_board(request: Request):
+    pg = await new_board_page(request)
+    pg.nothing = "created"
+    return respond_write(pg, request)
 
 
 def get_draft(code):
@@ -1158,11 +1263,6 @@ async def draft_add(request: Request, code: str):
     if d["post_id"]:
         return respond(err("already published", f"Draft {code} was already published as No.{d['post_id']}.", 409),
                        request)
-    wait = util.limited("keys:" + util.ip_hash(client_ip(request)), config.KEY_MAX)
-    if wait:
-        pg = err("rate limited", f"Too many draft pieces; wait {wait} seconds, then send the same URL again.", 429)
-        pg.headers["Retry-After"] = str(wait)
-        return respond(pg, request)
     p = await params(request)
     text, e = util.body_from(p, "text")
     if e:
