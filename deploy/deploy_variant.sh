@@ -27,7 +27,7 @@ services:
       PUBLIC_URL: "$PUB"
       TRUST_PROXY: "1"
       TRUST_XFF: "1"
-      EVAL_ENDPOINTS: "1"
+      EVAL_ENDPOINTS: "${EVAL_ENDPOINTS:-0}"
     ports: !override
       - "127.0.0.1:$LPORT:8000"
 YML

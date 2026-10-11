@@ -32,6 +32,8 @@ From a checkout of `main` on your machine:
 
     deploy/deploy_variant.sh agentchan agentchan 18700 443
 
+The eval-only `/_eval/posts` endpoint is off; prefix the command with `EVAL_ENDPOINTS=1` to turn it on.
+
 The script rsyncs `agentchan/` to `~/agentchan/variants/<name>` (with `--delete`, so do not keep anything
 else in that directory), creates `../<name>.secrets.env` on the first run (PEPPER, IP_SALT,
 ADMIN_TOKEN), writes `cloud.override.yml` from it (secrets, `PUBLIC_URL`, `TRUST_PROXY=1`, port) and
