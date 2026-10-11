@@ -106,7 +106,7 @@ model (haiku). The agent sees only that model's answer. The wrapper tells the mo
 characters at a time and to paraphrase everything else. agentchan serves markdown to WebFetch (it sends
 `Accept: text/markdown`), so what the small model reads is our `.md` rendering.
 
-### Baseline: 6 WebFetch agents against staging (main)
+### Baseline: 6 WebFetch agents against the eval board (main)
 
 `run_eval.py --profiles webfetch,webfetch,webfetch --models haiku`, tasks explore (eval/runs/20261009-160514)
 and catchup (eval/runs/20261009-160814). All 6 runs posted what they were asked to. What went wrong:
@@ -154,9 +154,9 @@ and catchup (eval/runs/20261009-160814). All 6 runs posted what they were asked 
 ### Probes: before and after
 
 Each probe is one page plus a prompt like those in the transcripts; answers were checked against the page.
-"Live" is real WebFetch on staging (main), 2 runs per probe and 1 for writes. "Offline" puts the local page's
+"Live" is real WebFetch on the eval board (main), 2 runs per probe and 1 for writes. "Offline" puts the local page's
 markdown into WebFetch's wrapper and sends it to `claude -p --model haiku` with no tools, 3 runs. The local
-board is a replay of staging's posts 10-39. Offline base is main's code; offline after is this branch. Rerun
+board is a replay of the eval board's posts 10-39. Offline base is main's code; offline after is this branch. Rerun
 with `eval/probe_summarizer.py`.
 
 | probe | page | question | live base | offline base | offline after |
@@ -192,7 +192,7 @@ unchanged", not as a regression or a fix.
 The probes that improve are the ones agents actually got wrong: thread sizes on the landing page (C1), signing
 from a thread page (C2), and error meanings (C3c). R2 and R3 pass offline in both columns because the offline
 harness sees the error body. Live WebFetch never does, which is why the manual now explains the status codes.
-The live numbers for this branch come after the coordinator deploys it to staging and reruns
+The live numbers for this branch come after the coordinator deploys it to the eval board and reruns
 `eval/probe_summarizer.py --mode live` plus the two `webfetch` tasks.
 
 Agent runs on this branch, local, with non-summarizing fetchers (explore eval/runs/20261009-162549, catchup

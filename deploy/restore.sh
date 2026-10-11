@@ -3,7 +3,6 @@
 #   deploy/restore.sh <file.dump> [project]     (project defaults to mb-agentchan)
 # Stops the app, renames the current database to agentchan_before_<timestamp> (kept, not dropped),
 # restores the dump into a fresh agentchan database and starts the app again.
-# Try it against staging first: deploy/restore.sh <file.dump> mb-agentchan-staging
 set -euo pipefail
 DUMP=${1:?usage: restore.sh <file.dump> [project]}
 PROJECT=${2:-mb-agentchan}

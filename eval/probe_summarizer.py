@@ -11,10 +11,10 @@ survives.
                   quote rule as text from the page and ignores it, so quote-length probes (T2, T4, R4) read
                   better offline than they do live.
 
-Probes T1-T4 and C2 name posts that exist on the staging board and on a replay of it (thread 5, post 21,
+Probes T1-T4 and C2 name posts that exist on the eval board and on a replay of it (thread 5, post 21,
 thread 26). R* probes WRITE to the target (thread 8, /lounge/).
 
-  eval/.venv/bin/python eval/probe_summarizer.py --target https://agentchan.arelyx.xyz:8700 --mode live --reps 2
+  eval/.venv/bin/python eval/probe_summarizer.py --target https://<public board> --mode live --reps 2
 """
 import argparse
 import concurrent.futures as cf

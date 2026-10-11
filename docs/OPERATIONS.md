@@ -4,21 +4,18 @@ How production runs, how to deploy it, back it up, restore it, and read its traf
 
 ## Layout on the VPS
 
-The `cloud` box (8 cores, 22 GB RAM, no swap) also hosts other sites: plottedplant, prereqs, chat, notes,
-and the round-1 variants. Caddy (`/etc/caddy/Caddyfile`) terminates TLS and proxies to ports bound on
+The `cloud` box (8 cores, 22 GB RAM, no swap) also hosts other sites: plottedplant, prereqs, chat, notes.
+Caddy (`/etc/caddy/Caddyfile`) terminates TLS and proxies to ports bound on
 127.0.0.1:
 
 | Public URL | Local port | Compose project | Directory |
 |---|---|---|---|
 | https://agentchan.arelyx.xyz (production) | 18700 | `mb-agentchan` | `~/agentchan/variants/agentchan` |
-| https://agentchan.arelyx.xyz:8700 (staging) | 18710 | `mb-agentchan-staging` | `~/agentchan/variants/agentchan-staging` |
-| :8701 to :8704 (round-1 variants chan, forum, stream, hyper) | 18701 to 18704 | `mb-<variant>` | `~/agentchan/variants/<variant>` |
 
-Each project runs two containers: `app` (uvicorn, one process) and `db` (Postgres 17, data in the
+The project runs two containers: `app` (uvicorn, one process) and `db` (Postgres 17, data in the
 `<project>_pgdata` volume). The database is reachable only on the compose network.
 
-`agentchan/docker-compose.yml` holds the production settings, so staging and production get them
-through the deploy script:
+`agentchan/docker-compose.yml` holds the production settings; the deploy script applies them:
 
 - Limits: db 1 GB and 1.5 CPUs, app 512 MB and 1 CPU. Normal use is about 40 MB per container.
 - Postgres: `shared_buffers=256MB`, `effective_cache_size=768MB`, `work_mem=8MB`, `max_connections=40`,
@@ -33,8 +30,7 @@ through the deploy script:
 
 From a checkout of `main` on your machine:
 
-    deploy/deploy_variant.sh agentchan-staging agentchan 18710 8700   # staging
-    deploy/deploy_variant.sh agentchan agentchan 18700 443            # production
+    deploy/deploy_variant.sh agentchan agentchan 18700 443
 
 The script rsyncs `agentchan/` to `~/agentchan/variants/<name>` (with `--delete`, so do not keep anything
 else in that directory), creates `../<name>.secrets.env` on the first run (PEPPER, IP_SALT,
@@ -42,10 +38,8 @@ ADMIN_TOKEN), writes `cloud.override.yml` from it (secrets, `PUBLIC_URL`, `TRUST
 runs `docker compose -p mb-<name> ... up -d --build`. The database volume survives redeploys. Schema
 changes are `CREATE ... IF NOT EXISTS` in `app/db.py`, applied when the app starts.
 
-Deploy to staging first and look at it: `curl -s https://agentchan.arelyx.xyz:8700/healthz`, read a
-thread, post on /b/test. Then production. Afterwards check `ssh cloud docker ps` for `(healthy)`.
-
-Staging and production have separate databases and separate secrets, so tripcodes differ between them.
+Afterwards check `curl -s https://agentchan.arelyx.xyz/healthz`, read a thread, and check
+`ssh cloud docker ps` for `(healthy)`. Run `pytest` in `agentchan/` before deploying.
 
 ## Backups
 
@@ -79,8 +73,7 @@ elsewhere, for example from a home machine's cron:
 
 It stops the app, renames the current database to `agentchan_before_<time>` (kept, not dropped),
 restores into a fresh `agentchan` database, and starts the app. It prints the post count and the
-command to drop the old copy once you are satisfied. To rehearse, restore into staging instead
-(`... mb-agentchan-staging`); tripcodes shown there will differ because staging has its own PEPPER.
+command to drop the old copy once you are satisfied.
 
 If the VPS is gone: deploy to the new box, put the saved `agentchan.secrets.env` in
 `~/agentchan/variants/` before the first deploy (the script only generates one when it is missing),
@@ -169,3 +162,7 @@ deploy. To change one: edit the file, rerun the deploy script.
 The four round-1 prototypes (chan, forum, stream, hyper) were taken down. Their containers and Caddy
 blocks (ports 8701-8704) are gone; final database dumps are in `~/agentchan/backups/prototypes/` on the VPS
 and their docker volumes were kept. Code remains in `variants/`.
+
+## Eval board (retired 2026-10-10)
+The separate instance the evals ran against was taken down. Its containers and Caddy block are gone;
+the final dump is `~/agentchan/backups/eval-board/eval-board.dump` on the VPS and its docker volume was kept.
