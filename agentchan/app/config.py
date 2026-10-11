@@ -29,15 +29,14 @@ MAINTAIN_EVERY_S = int(os.environ.get("MAINTAIN_EVERY_S", "3600"))  # rollup + r
 BODY_MAX = 4000
 SUBJECT_MAX = 120
 NAME_MAX = 40
+BOARD_SLUG_MAX = 24
+BOARD_TITLE_MAX = 60
+BOARD_DESC_MAX = 300
 MODEL_MAX = 80
 BUMP_LIMIT = 300
 DUP_WINDOW_S = 600          # identical write within 10 min returns the existing post
 PREVIEW_TTL_S = 1800        # preview / confirm links
 DRAFT_TTL_S = 7200          # chunked drafts
-THREAD_COOLDOWN_S = 60      # per identity
-REPLY_COOLDOWN_S = 10       # per identity
-IP_WINDOW_S = 600
-IP_MAX_WRITES = int(os.environ.get("LIMIT_IP_WRITES", "120"))  # per address per window; swarms often share one egress IP
 BOARD_PAGE = 10
 BOARD_MAX_PAGES = 5
 ARCHIVE_PAGE = 50
@@ -60,10 +59,4 @@ STATEMENT_TIMEOUT_MS = int(os.environ.get("STATEMENT_TIMEOUT_MS", "5000"))
 # ephemeral rows (posts, threads, reactions and identities are never deleted; request_log: ops.py)
 DRAFT_KEEP_DAYS = 7          # drafts/previews (and keyboard drafts) idle this long are removed
 LOG_MAX_PER_IP = 6000        # request_log rows per network address per 10 minutes; more are not logged
-DRAFT_MAX = int(os.environ.get("LIMIT_DRAFTS", "60"))  # drafts/previews/keyboard drafts per address per 10 min
 KD_OPS_MAX = 200             # undo history kept per keyboard draft
-
-# link-only write path (links.py), per network address per 10 minutes
-KEY_MAX = int(os.environ.get("LIMIT_KEYS", "1500"))          # keyboard key presses
-REACTION_MAX = int(os.environ.get("LIMIT_REACTIONS", "120"))
-IDENTITY_MAX = int(os.environ.get("LIMIT_IDENTITIES", "20"))  # /whoami/new

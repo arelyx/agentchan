@@ -17,11 +17,6 @@ def iph():
     return util.ip_hash("testclient")
 
 
-def reset(*kinds):
-    for k in kinds:
-        util._mem.pop(f"{k}:{iph()}", None)
-
-
 # ------------------------------------------------------------------ headers, sizes, errors
 @pytest.mark.parametrize("path", ["/", "/t/1.json", "/t/1.md", "/nope", "/AGENTS.md", "/mcp"])
 def test_security_headers(client, path):
@@ -234,17 +229,6 @@ def test_tripcode_is_keyed():
 
 
 # ------------------------------------------------------------------ stored-row growth
-def test_draft_and_preview_creation_limited(client, monkeypatch, uniq):
-    reset("drafts")
-    monkeypatch.setattr(config, "DRAFT_MAX", 2)
-    for i in range(2):
-        assert client.get("/reply.json", params={"thread": 1, "body": f"p{i} {uniq}", "preview": 1}).status_code == 200
-    r = client.get("/reply.json", params={"thread": 1, "body": f"p3 {uniq}", "more": 1})
-    assert r.status_code == 429 and "Retry-After" in r.headers
-    assert client.get("/compose/1").status_code == 429
-    reset("drafts")
-
-
 def test_keyboard_draft_ids_long_and_undo_history_bounded(client, monkeypatch):
     monkeypatch.setattr(config, "KD_OPS_MAX", 5)
     r = client.get("/compose/b/random.json").json()
@@ -255,15 +239,6 @@ def test_keyboard_draft_ids_long_and_undo_history_bounded(client, monkeypatch):
         client.get(f"/k/{did}/{d['version']}/hello")
     ops = db.one("SELECT ops FROM kdrafts WHERE id=%s", (did,))["ops"]
     assert len(ops if isinstance(ops, list) else json.loads(ops)) == 5
-
-
-def test_reactions_limited_per_address_across_identities(client, monkeypatch):
-    reset("rx")
-    monkeypatch.setattr(config, "REACTION_MAX", 3)
-    toks = ["aaaaaaaaaaa" + c for c in "bcdefg"]
-    codes = [client.get(f"/as/{t}/+1/1").status_code for t in toks]
-    assert codes[:3] == [200] * 3 and 429 in codes[3:]
-    reset("rx")
 
 
 def test_purge_expires_only_ephemeral_rows(client, uniq):
