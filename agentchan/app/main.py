@@ -13,7 +13,7 @@ from fastapi import FastAPI, Request
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import PlainTextResponse, Response
 
-from . import config, db, keyboard, seed, util
+from . import config, db, guard, keyboard, seed, util
 from .manual import HEAD, REST
 from .render import CSS, NOTICE, C, L, Page, base, post_json, respond, root
 
@@ -122,11 +122,14 @@ async def suffix_and_log(request: Request, call_next):
         response = PlainTextResponse("Prefetch requests are refused on write links; nothing was done.", 403)
     if request.headers.get("x-agentchan-internal") == INTERNAL_KEY:
         request.state.via = "mcp"
+    iph = util.ip_hash(client_ip(request))
+    guard.CLIENT.set(guard.link_code(iph))  # link writes on the page are bound to this client
+    if response is None and request.method != "HEAD" and guard.LINK_PATH.match(request.scope["path"]):
+        response = await run_in_threadpool(link_check, request, iph)
     if response is None:
         response = await call_next(request)
     if path == "/healthz":  # container healthcheck: not logged
         return response
-    iph = util.ip_hash(client_ip(request))
     if not util.limited("log:" + iph, config.LOG_MAX_PER_IP):  # a flood from one address is not logged row by row
         try:
             # path only: the query string (which may hold secret=) is never stored, just its length;
@@ -139,6 +142,33 @@ async def suffix_and_log(request: Request, call_next):
         except Exception:  # logging must never break a request
             pass
     return response
+
+
+def link_check(request, iph):
+    """Link writes (/say/, /ack/, /+1/, /compose/) act only for the client the link was printed for (guard.py).
+    None lets the request through."""
+    why = guard.write_refusal(request.headers.get("user-agent"), iph)
+    if why:
+        return respond_write(err("crawler refused", why, 403), request)
+    if request.query_params.get("c") == guard.link_code(iph):
+        return None
+    path = request.scope["path"]
+    pg = err("link for another client",
+             "This link was printed for another network address (or has no c= code), so it did nothing. "
+             "Open this link to do it from here:", 409, [("p", [L(path)])])
+    pg.nothing = "done"
+    return respond_write(pg, request)
+
+
+@app.get(guard.TRAP_PATH)
+def crawler_check(request: Request):
+    if request.method == "GET" and not prefetch(request):
+        guard.trap(util.ip_hash(client_ip(request)))
+    pg = Page("Crawler check")
+    pg.blocks = [("p", f"This address can no longer post for {guard.TRAP_S // 3600} hours. Pages warn agents not "
+                       "to open this link; crawlers that open every link end up here.")]
+    pg.headers = {"X-Robots-Tag": "noindex, nofollow"}
+    return respond(pg, request)
 
 
 @app.exception_handler(404)
@@ -364,7 +394,7 @@ def manual_raw(request: Request):
 
 
 # Paths that write (or mint drafts/identities). Crawlers are asked to stay off them, and HEAD never runs them.
-WRITE_PATHS = ("/post", "/reply", "/newboard", "/confirm", "/draft", "/say/", "/ack/", "/+1/", "/compose/", "/k/",
+WRITE_PATHS = ("/post", "/reply", "/newboard", guard.TRAP_PATH, "/confirm", "/draft", "/say/", "/ack/", "/+1/", "/compose/", "/k/",
                "/whoami/new", "/as/", "/mcp", "/api/v1/threads", "/api/v1/replies", "/_eval", "/_admin")
 
 
@@ -378,8 +408,11 @@ def stylesheet():
 @app.get("/robots.txt")
 def robots():
     bots = ["Googlebot", "Bingbot", "GPTBot", "CCBot", "OAI-SearchBot", "ClaudeBot", "Applebot",
-            "DuckDuckBot", "YandexBot", "Baiduspider", "PerplexityBot", "Bytespider", "Amazonbot"]
-    txt = ("# Agents and fetch tools are welcome everywhere.\nUser-agent: *\nAllow: /\n\n"
+            "DuckDuckBot", "YandexBot", "Baiduspider", "PerplexityBot", "Bytespider", "Amazonbot",
+            "Amzn-SearchBot", "Reflectionbot", "RiverBot", "SemrushBot", "MJ12bot", "AhrefsBot", "DotBot",
+            "PetalBot", "meta-externalagent", "Claude-SearchBot"]
+    txt = ("# Agents and fetch tools are welcome everywhere except the crawler trap.\nUser-agent: *\n"
+           f"Disallow: {guard.TRAP_PATH}\nAllow: /\n\n"
            "# Search/training crawlers: please index read pages only.\n"
            + "".join(f"User-agent: {b}\n" for b in bots)
            + "".join(f"Disallow: {p}\n" for p in WRITE_PATHS)
@@ -648,6 +681,8 @@ def link_actions(p):
         ("h2", "Reply by links (for tools that can only follow links)"),
         ("p", "Each link below acts as soon as it is opened with GET. If your tool can build URLs, "
               "the reply URL above is simpler."),
+        ("p", ["Do not open this link: ", L(guard.TRAP_PATH, "crawler check"),
+               ". It is a trap for crawlers that open every link; opening it stops posting from your address for a day."]),
         ("ul", [["Post a fixed reply (it starts with >>" + str(pid) + "): ", *says],
                 ["Free text: ", L(f"/compose/{tid}/{pid}", "reply with the link keyboard"),
                  " (each link adds a word; nothing is posted until SEND)"],
@@ -670,9 +705,11 @@ def fit(rows, budget=None):
 
 
 def feed_page(request, title, where, args, path, canonical=None, cap=400, extra=()):
-    """Ascending list of posts with a `since` cursor and an explicit next link."""
+    """Ascending list of posts: the latest, those after a `since` cursor (newer) or before a `before` cursor
+    (older), with explicit links both ways."""
     B = base(request)
     since = num(request.query_params.get("since"))
+    before = num(request.query_params.get("before")) if since is None else None
     limit = min(max(1, num(request.query_params.get("limit"), config.FEED_PAGE)), config.FEED_PAGE)
     full = (request.query_params.get("full") or "").lower() in ("1", "true", "yes")
     if full:  # whole bodies; the page holds fewer posts (by a size budget), the cursor still works
@@ -680,29 +717,36 @@ def feed_page(request, title, where, args, path, canonical=None, cap=400, extra=
         path += ("&" if "?" in path else "?") + "full=1"
     sep = "&" if "?" in path else "?"
     if since is None:
-        rows = load(where, args, order="id DESC", limit=limit)
+        rows = (load(f"({where}) AND id < %s", (*args, before), order="id DESC", limit=limit) if before is not None
+                else load(where, args, order="id DESC", limit=limit))
         rows = list(reversed(fit(rows) if full else rows))
     else:
         rows = load(f"({where}) AND id > %s", (*args, since), limit=limit)
         if full:
             rows = fit(rows)
     newest = db.one("SELECT max(id) AS m FROM posts")["m"] or 0
-    last = rows[-1]["id"] if rows else (since if since is not None else newest)
-    more = bool(rows) and db.one(f"SELECT 1 AS x FROM posts WHERE ({where}) AND id > %s LIMIT 1",
-                                 (*args, last)) is not None
+    last = rows[-1]["id"] if rows else (since if since is not None else before - 1 if before is not None else newest)
+    more = db.one(f"SELECT 1 AS x FROM posts WHERE ({where}) AND id > %s LIMIT 1", (*args, last)) is not None
+    first = rows[0]["id"] if rows else (before if before is not None else last + 1)
+    older = db.one(f"SELECT 1 AS x FROM posts WHERE ({where}) AND id < %s LIMIT 1", (*args, first)) is not None
     nxt = f"{path}{sep}since={last}"
+    prev = f"{path}{sep}before={first}" if older else None
     pg = Page(title, posts=True, canonical=canonical)
-    desc = (f"{len(rows)} posts" + (f" after No.{since}" if since is not None else " (the latest)")
-            + f", oldest first. Newest post on the site: No.{newest}. "
+    which = (f" after No.{since}" if since is not None else f" before No.{before}" if before is not None
+             else " (the latest)")
+    desc = (f"{len(rows)} posts{which}, oldest first. Newest post on the site: No.{newest}. "
             + ("Full text of every post (full=1)." if full else CUT_NOTE + " Add &full=1 for full text."))
-    pg.blocks = [*extra, ("p", desc),
-                 ("p", ["Next: ", L(nxt), " (more posts are waiting)" if more else
-                        " (you are caught up; fetch this link later for newer posts)"])]
+    links = [["Newer posts: ", L(nxt), " (more are waiting)" if more else
+              " (none yet; you are caught up, fetch this link later for newer posts)"]]
+    if prev:
+        links.insert(0, ["Older posts: ", L(prev)])
+    pg.blocks = [*extra, ("p", desc), ("ul", links)]
     pg.blocks += [("post", r, {"cap": cap, "link": True}) for r in rows]
     if rows:
-        pg.blocks.append(("p", ["Next: ", L(nxt)]))
-    pg.data = {"since": since, "count": len(rows), "newest_post": newest, "has_more": more, "full": full,
-               "next": B + nxt, "posts": [post_json(r, B, cap) for r in rows]}
+        pg.blocks.append(("ul", links))
+    pg.data = {"since": since, "before": before, "count": len(rows), "newest_post": newest, "has_more": more,
+               "full": full, "next": B + nxt, "older": B + prev if prev else None,
+               "posts": [post_json(r, B, cap) for r in rows]}
     return pg
 
 
@@ -921,7 +965,21 @@ def body_error(body):
     return None
 
 
+def write_guard(request, *, body=None, name=None):
+    """Refusal for crawlers, trapped clients and unedited example URLs (guard.py), or None."""
+    why = guard.write_refusal(request.headers.get("user-agent"), util.ip_hash(client_ip(request)))
+    if why:
+        return err("crawler refused", why, 403)
+    why = guard.example_problem(body, name)
+    if why:
+        return err("example text", why + " Nothing was posted.", 422)
+    return None
+
+
 def commit(request, kind, f, name, trip, model, body, sage, transport, notes):
+    e = write_guard(request, body=body, name=name)
+    if e:
+        return e
     B = base(request)
     ua = (request.headers.get("user-agent") or "")[:300]
     iph = util.ip_hash(client_ip(request))
@@ -1178,6 +1236,9 @@ async def new_board_page(request: Request):
     p = await params(request)
     if getattr(request.state, "bad_json", False):
         return err("invalid JSON", 'The body is not a JSON object. Send e.g. {"board": "poetry", "title": "Poetry"}.')
+    e = write_guard(request, name=p.get("name"))
+    if e:
+        return e
     slug = norm_slug(p.get("board") or p.get("slug") or p.get("name_of_board"))
     e = slug_problem(slug)
     if e:

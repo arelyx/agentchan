@@ -3,7 +3,7 @@ import html
 import re
 import socket
 
-from conftest import find
+from conftest import bound, find
 
 from app import config
 from app import keyboard as kb
@@ -22,7 +22,8 @@ def go(client, url):
 
 def link(r, pattern=None, text=None):
     for t, u in anchors(r):
-        if (pattern and re.search(pattern, u)) or (text is not None and t == text):
+        bare = re.sub(r"[?&]c=[0-9a-f]{8}$", "", u)  # link writes carry the client's code
+        if (pattern and re.search(pattern, bare)) or (text is not None and t == text):
             return u
     raise AssertionError(f"no link {pattern or text!r} on {r.url}")
 
@@ -64,7 +65,7 @@ def test_manual_first_screen(client):
     h = client.get("/").text
     assert h.index("Latest activity") < h.index("If your tool can only follow links")
     # example write URLs are not clickable (opening one would post); compose links are
-    assert f'href="{H}/post?' not in h and f'href="{H}/compose/b/meta"' in h
+    assert f'href="{H}/post?' not in h and f'href="{H}/compose/b/meta?c=' in h
 
 
 def test_latest_activity_lists_new_posts(client, uniq):
@@ -108,7 +109,7 @@ def test_identity_prefix(client, uniq):
     tok = re.search(r"/as/([a-z2-7]{12})/", u).group(1)
     page = go(client, u)
     assert all(f"/as/{tok}/" in x for _, x in anchors(page) if x.startswith(H) and "/k/" not in x)
-    client.get(f"/as/{tok}/say/1/thanks")
+    client.get(bound(f"/as/{tok}/say/1/thanks"))
     p = [x for x in find(client, ">>1 Thanks!") if x["author"] == f"{name} {trip}"]
     assert p
     # composed writes under the prefix are signed too; name= overrides the display name
@@ -119,7 +120,7 @@ def test_identity_prefix(client, uniq):
 
 # ------------------------------------------------------------------ keyboard
 def test_keyboard_flow(client):
-    r = client.get("/compose/b/lounge")
+    r = client.get(bound("/compose/b/lounge"))
     md = client.get(link(r, r"/k/\w+$").replace(H, ""), headers={"Accept": "text/markdown"}).text
     assert "SEND" in md[:1500]
     r = press(client, r, "p.hello-everyone")
@@ -157,7 +158,7 @@ def test_keyboard_flow(client):
 
 
 def test_keyboard_reply_quote_and_suggestions(client):
-    r = client.get("/compose/1/2")
+    r = client.get(bound("/compose/1/2"))
     assert "&gt;&gt;2" in r.text
     r = press(client, r, "i")
     assert link(r, r"/k/\w+/\d+/agree$")  # bigram learned from "I agree." posts
@@ -168,7 +169,7 @@ def test_keyboard_reply_quote_and_suggestions(client):
 
 
 def test_completions_and_sticky_name(client):
-    r = go(client, link(client.get("/compose/b/ideas"), r"/k/\w+/chars$"))
+    r = go(client, link(client.get(bound("/compose/b/ideas")), r"/k/\w+/chars$"))
     r = press(client, r, "c.k")
     r = press(client, r, "c.e")
     assert "Complete the word &#x27;ke&#x27;" in r.text
@@ -190,7 +191,7 @@ def test_completions_and_sticky_name(client):
 
 
 def test_keyboard_page_bounds(client):
-    r = client.get("/compose/b/meta")
+    r = client.get(bound("/compose/b/meta"))
     assert len(r.content) < 16_000
     for _, u in anchors(r):
         assert len(u) <= 200, u
@@ -253,7 +254,7 @@ def test_raw_spaces_and_utf8_in_target():
 
 
 def test_keyboard_receipt_offers_signed_replies(client, uniq):
-    r = client.get("/compose/b/lounge")
+    r = client.get(bound("/compose/b/lounge"))
     r = type_word(client, r, "hello")
     r = press(client, r, "f.name")
     r = type_word(client, r, "fetch")
@@ -331,7 +332,7 @@ def status_of(r):
 def test_keyboard_phrase_keys_and_context(client, uniq):
     tid = client.get(f"/post.json?board=lounge&subject=ctx+{uniq}&body=Prefetching+crawlers+break+GET+writes"
                      f"+on+message+boards.+{uniq}").json()["id"]
-    r = client.get(f"/compose/{tid}/{tid}")
+    r = client.get(bound(f"/compose/{tid}/{tid}"))
     md = client.get(link(r, r"/k/\w+$").replace(H, ""), headers={"Accept": "text/markdown"}).text
     head = md[:3500]
     assert "SEND" in head and "Start a sentence:" in head
@@ -353,7 +354,7 @@ def test_keyboard_phrase_keys_and_context(client, uniq):
 
 def test_keyboard_quote_phrase_and_codes(client, uniq):
     code = "code-" + uniq + "9"
-    r = client.get("/compose/b/lounge")
+    r = client.get(bound("/compose/b/lounge"))
     r = press(client, r, "p.hi-all")
     assert "Hi all," in r.text
     r = key(client, r, "w." + code)  # identifiers keep their case and are never capitalized
@@ -367,7 +368,7 @@ def test_keyboard_quote_phrase_and_codes(client, uniq):
     assert p[0]["body"] == f"Hi all, {code}" and p[0]["author"].startswith("fetch-q !")
     # the receipt's signed reply link: codes from earlier posts and the reply starters are one key
     t = go(client, link(r, r"/as/[a-z2-7]{12}/compose/\d+/\d+$"))
-    q = int(re.search(r"/compose/\d+/(\d+)$", link(r, r"/as/[a-z2-7]{12}/compose/\d+/\d+$")).group(1))
+    q = int(re.search(r"/compose/\d+/(\d+)(?:\?c=\w+)?$", link(r, r"/as/[a-z2-7]{12}/compose/\d+/\d+$")).group(1))
     assert "Codes and names from your earlier posts:" in t.text
     t = press(client, t, "p.good-question")
     t = press(client, t, code)
@@ -375,14 +376,14 @@ def test_keyboard_quote_phrase_and_codes(client, uniq):
     go(client, link(t, r"/send$"))
     assert find(client, f">>{q} Good question. {code}.")
     # a draft that does not quote yet offers "I agree with >>N because"
-    t = client.get(f"/compose/{p[0]['id']}")
+    t = client.get(bound(f"/compose/{p[0]['id']}"))
     assert link(t, rf"/p\.agree-with\.{p[0]['id']}$")
     t = press(client, t, f"p.agree-with.{p[0]['id']}")
     assert f"I agree with &gt;&gt;{p[0]['id']} because" in t.text
 
 
 def test_keyboard_sign_as_and_letters(client, uniq):
-    r = client.get("/compose/b/lounge")
+    r = client.get(bound("/compose/b/lounge"))
     r = type_word(client, r, "hello")
     r = press(client, r, "f.name")
     r = press(client, r, "c.z")
@@ -393,7 +394,7 @@ def test_keyboard_sign_as_and_letters(client, uniq):
     r = key(client, r, "w." + uniq)
     go(client, link(r, r"/send$"))
     # a new draft from the same address offers that name as one key
-    r = client.get("/compose/b/lounge")
+    r = client.get(bound("/compose/b/lounge"))
     r = press(client, r, "n.zq-k")
     assert "author: zq-k" in r.text
     r = press(client, r, "undo")
@@ -416,7 +417,7 @@ def test_keyboard_sign_as_and_letters(client, uniq):
 def test_keyboard_page_size_with_long_root(client, monkeypatch):
     monkeypatch.setattr(config, "PUBLIC_URL", "https://agentchan.example-board.xyz")
     for start in ("/compose/b/general", "/compose/1/2"):
-        r = client.get(start)
+        r = client.get(bound(start))
         md = client.get(link(r, r"/k/\w+$").replace("https://agentchan.example-board.xyz", ""),
                         headers={"Accept": "text/markdown"}).text
         assert len(md.encode()) < 9000, len(md)

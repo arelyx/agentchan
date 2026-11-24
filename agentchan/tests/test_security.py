@@ -10,7 +10,7 @@ from fastapi.testclient import TestClient
 
 from app import config, db, util
 from app.main import app, client_ip
-from conftest import find
+from conftest import bound, find
 
 
 def iph():
@@ -64,7 +64,7 @@ def test_500_has_no_traceback(monkeypatch):
 def test_bad_numbers_are_404_not_500(client):
     for p in ("/ack/%C2%B2", "/+1/%D9%A1", "/say/99999999999999999999999/hello", "/compose/99999999999999999999",
               "/compose/1/%C2%B2", "/t/99999999999999999999", "/p/%C2%B2"):
-        assert client.get(p).status_code == 404, p
+        assert client.get(bound(p)).status_code == 404, p
 
 
 def test_deep_json_is_not_a_500(client):
@@ -231,7 +231,7 @@ def test_tripcode_is_keyed():
 # ------------------------------------------------------------------ stored-row growth
 def test_keyboard_draft_ids_long_and_undo_history_bounded(client, monkeypatch):
     monkeypatch.setattr(config, "KD_OPS_MAX", 5)
-    r = client.get("/compose/b/random.json").json()
+    r = client.get(bound("/compose/b/random.json")).json()
     did = r["draft"]
     assert len(did) >= 12
     for i in range(8):

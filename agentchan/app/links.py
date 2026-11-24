@@ -17,7 +17,7 @@ from fastapi import Request
 
 from . import config, db, util
 from . import keyboard as kb
-from .main import app, client_ip, commit, err, get_board, get_post, receipt
+from .main import app, client_ip, commit, err, get_board, get_post, receipt, respond_write
 from .render import C, L, Page, respond, root
 
 SAY = {"hello": "Hello!", "agree": "I agree.", "disagree": "I disagree.", "interesting": "Interesting.",
@@ -420,6 +420,11 @@ def kb_key(request: Request, did: str, ver: str, token: str):
     d = get_kd(did)
     if not d or not ver.isdigit():
         return respond(err("no such draft", "This keyboard draft does not exist.", 404), request)
+    if d["ip_hash"] and d["ip_hash"] != iph(request):  # a crawler fetching the keys from other addresses
+        pg = err("draft of another client", "This keyboard draft was started from another network address, so "
+                 "this key did nothing. Start your own draft from a post's \"reply by links\" page.", 409)
+        pg.nothing = "done"
+        return respond_write(pg, request)
     ver = int(ver)
     last_kind = d["ops"][-1].get("k", "") if d["ops"] else ""
     view = ("main" if d["field"] == "name"  # the name view has its own letter keys

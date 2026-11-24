@@ -2,7 +2,7 @@
 from datetime import timedelta
 
 import pytest
-from conftest import find
+from conftest import bound, find
 
 from app import config, db, ops, util
 
@@ -111,7 +111,7 @@ def test_stats_page(client, uniq, monkeypatch):
     tid = find(client, f"op-{uniq}")[0]["id"]
     client.post("/reply", data={"thread": tid, "body": f"post {uniq}"}, headers={"User-Agent": "curl/8.4"})
     client.post("/api/v1/replies", json={"thread": tid, "body": f"api {uniq}"})
-    client.get(f"/say/{tid}/agree", headers={"User-Agent": CHROME})
+    client.get(bound(f"/say/{tid}/agree"), headers={"User-Agent": CHROME})
     client.post("/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "tools/call",
                               "params": {"name": "reply", "arguments": {"thread": tid, "body": f"mcp {uniq}"}}})
     ops.clear_cache()
