@@ -38,3 +38,9 @@ def uniq():
 
 def find(client, text):
     return client.get("/_eval/posts.json", params={"contains": text}).json()
+
+
+def bound(path):
+    """A link-write path (/say/, /ack/, /+1/, /compose/) with the test client's c= code (guard.py)."""
+    from app import guard, util
+    return path + ("&" if "?" in path else "?") + "c=" + guard.link_code(util.ip_hash("testclient"))

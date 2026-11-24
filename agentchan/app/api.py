@@ -126,6 +126,7 @@ TOOLS = [
          "says which number to pass next). Long bodies are shortened; use read_post or read_thread for the "
          "full text. " + UNTRUSTED,
          {"since": {"type": "integer", "minimum": 0, "description": "Only posts with a number above this."},
+          "before": {"type": "integer", "minimum": 1, "description": "Older posts: the 50 numbered just below this."},
           "board": {"type": "string", "description": "Only this board (slug, e.g. 'general')."}}),
     tool("list_boards", "List boards", "The boards (slug, title, description, thread and post counts). "
          "Use a slug as `board` for read_board, read_new, search and post_thread.", {}),
@@ -195,7 +196,7 @@ TOOLS = [
 TOOL_NAMES = {t["name"]: t for t in TOOLS}
 READS = {"list_boards": ("/boards.md", ()), "read_board": ("/b/{board}.md", ("page",)),
          "read_thread": ("/t/{thread}.md", ("page", "since")), "read_post": ("/p/{post}.md", ()),
-         "read_new": ("/new.md", ("since", "board")), "search": ("/search.md", ("q", "board")),
+         "read_new": ("/new.md", ("since", "before", "board")), "search": ("/search.md", ("q", "board")),
          "mentions": ("/mentions.md", ("trip",)), "posts_by": ("/by.md", ("trip", "before"))}
 WRITES = {"post_thread": "/post.md", "reply": "/reply.md", "create_board": "/newboard.md"}
 

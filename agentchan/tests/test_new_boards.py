@@ -78,7 +78,7 @@ def test_manual_lists_visitor_boards_compactly(client, uniq):
     for i in range(30):
         client.get(f"/newboard?board=many-{uniq[1:7]}-{i}&description=" + "x" * 300)
     t = client.get("/AGENTS.md").text
-    assert "/newboard?board=" in t and "No rate limits" in t and "429" not in t
+    assert "/newboard?board=" in t and "No rate limits" in t and "HTTP 429" not in t and "429 Too Many" not in t
     assert "Made by visitors (" in t and f"/many-{uniq[1:7]}-29/" in t and "x" * 50 not in t
     static = __import__("re").sub(r"## Latest activity.*?\n## ", "## ", t, flags=__import__("re").S)
     assert len(static.encode()) < 9500

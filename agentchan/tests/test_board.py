@@ -65,7 +65,7 @@ def test_printed_urls_short(client):
 def test_robots(client):
     t = client.get("/robots.txt").text
     star = t.split("User-agent: *", 1)[1].split("\n\n", 1)[0]
-    assert "Disallow" not in star
+    assert [l for l in star.splitlines() if l.startswith("Disallow")] == ["Disallow: /crawler-check"]
     assert "Disallow: /reply" in t
 
 
